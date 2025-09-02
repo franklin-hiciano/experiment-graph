@@ -1,0 +1,139 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Node Notes</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  body{margin:0;font:14px system-ui, -apple-system, Segoe UI, Roboto, Ubuntu}
+  header{display:flex;gap:8px;align-items:center;padding:10px;border-bottom:1px solid #eee}
+  header h1{font-size:14px;margin:0}
+  #wrap{display:flex;height:calc(100vh - 50px)}
+  #editor,#preview{width:50%;height:100%;border:0}
+  #editor{resize:none;padding:12px;font:13px ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;outline:none}
+  #preview{padding:12px;overflow:auto}
+  #tabs{display:flex;gap:6px;margin-left:8px}
+  .tab{padding:4px 8px;border:1px solid #ddd;border-radius:8px;cursor:pointer}
+  .tab.active{background:#eef2ff;border-color:#c7d2fe}
+  #status{margin-left:auto;color:#6b7280;font-size:12px}
+  button{padding:4px 8px;border:1px solid #ddd;border-radius:8px;background:#fff;cursor:pointer}
+</style>
+
+<header>
+  <h1 id="title">Notes</h1>
+  <div id="tabs"></div>
+  <button id="add">＋ Section</button>
+  <button id="rename">✎ Rename</button>
+  <button id="del">— Delete</button>
+  <button id="mode">Preview</button>
+  <div id="status">Ready</div>
+</header>
+<div id="wrap">
+  <textarea id="editor" placeholder="Markdown…"></textarea>
+  <div id="preview" style="display:none"></div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.7/dist/purify.min.js"></script>
+<script>
+/* ------ CONFIG: fill these two lines ------ */
+const SUPABASE_URL = "https://gjdyushogvhuootdiwxz.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdqZHl1c2hvZ3ZodW9vdGRpd3h6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTY4NTE3NTMsImV4cCI6MjA3MjQyNzc1M30.52heLq-Ic5DIXCZV0tCiv_VhubkY2-v3arq7InoI-sE";
+
+const token = new URLSearchParams(location.search).get('token');
+if (!token) document.body.innerHTML = "<p style='padding:16px'>Missing ?token=…</p>";
+
+const { createClient } = supabase;
+const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+const editor = document.getElementById('editor');
+const preview = document.getElementById('preview');
+const tabsEl = document.getElementById('tabs');
+const statusEl = document.getElementById('status');
+const titleEl = document.getElementById('title');
+const modeBtn = document.getElementById('mode');
+
+let node = null;
+let secIndex = 0;
+let mode = 'edit';
+let saveTimer = null;
+
+function uuid(){ return ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c=>(c^crypto.getRandomValues(new Uint8Array(1))[0]&15>>c/4).toString(16)); }
+function ensureSections(n){ return (Array.isArray(n.sections)&&n.sections.length)? n.sections : [{id:uuid(), name:'Notes', md:''}]; }
+
+async function load() {
+  const { data, error } = await sb.from('nodes').select('*').eq('share_token', token).maybeSingle();
+  if (error || !data) { document.body.innerHTML = "<p style='padding:16px'>Invalid or missing token.</p>"; return; }
+  node = data;
+  titleEl.textContent = node.label || "Notes";
+  renderTabs();
+  loadCurrent();
+}
+
+function renderTabs(){
+  tabsEl.innerHTML='';
+  const secs = ensureSections(node);
+  secs.forEach((s,i)=>{
+    const t = document.createElement('div');
+    t.className = 'tab' + (i===secIndex?' active':'');
+    t.textContent = s.name;
+    t.onclick = ()=>{ saveNow(); secIndex=i; loadCurrent(); };
+    tabsEl.appendChild(t);
+  });
+}
+
+function loadCurrent(){
+  const secs = ensureSections(node);
+  const sec = secs[secIndex] || secs[0];
+  editor.value = sec.md || '';
+  if (mode==='preview') {
+    preview.innerHTML = DOMPurify.sanitize(marked.parse(editor.value||''));
+  }
+  renderTabs();
+  statusEl.textContent = 'Loaded';
+}
+
+async function persistSections(sections){
+  const { error } = await sb.from('nodes').update({ sections }).eq('id', node.id);
+  if (!error) { node.sections = sections; statusEl.textContent = 'Saved'; }
+  else statusEl.textContent = 'Save error: '+error.message;
+}
+
+function saveNow(){
+  const secs = ensureSections(node);
+  secs[secIndex].md = editor.value;
+  persistSections(secs);
+}
+
+editor.addEventListener('input', () => {
+  statusEl.textContent='Typing…';
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveNow, 500);
+});
+
+document.getElementById('add').onclick = () => {
+  const name = prompt('New section name:','Notes'); if (name==null) return;
+  const secs = ensureSections(node); secs.push({id:uuid(), name, md:''});
+  secIndex = secs.length - 1; persistSections(secs); renderTabs(); loadCurrent();
+};
+document.getElementById('rename').onclick = () => {
+  const secs = ensureSections(node); const sec = secs[secIndex]; if (!sec) return;
+  const name = prompt('Rename section:', sec.name); if (name==null) return;
+  sec.name = name; persistSections(secs); renderTabs(); loadCurrent();
+};
+document.getElementById('del').onclick = () => {
+  let secs = ensureSections(node); if (secs.length<=1){ alert('Keep at least one section.'); return; }
+  if (!confirm('Delete this section?')) return;
+  secs.splice(secIndex,1); secIndex = Math.max(0, secIndex-1);
+  persistSections(secs); renderTabs(); loadCurrent();
+};
+
+modeBtn.onclick = () => {
+  mode = (mode==='edit') ? 'preview' : 'edit';
+  modeBtn.textContent = (mode==='edit') ? 'Preview' : 'Edit';
+  editor.style.display = (mode==='edit') ? 'block' : 'none';
+  preview.style.display = (mode==='edit') ? 'none' : 'block';
+  if (mode==='preview') preview.innerHTML = DOMPurify.sanitize(marked.parse(editor.value||''));
+};
+
+load();
+</script>
