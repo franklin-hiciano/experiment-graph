@@ -1,10 +1,10 @@
 <!doctype html>
 <meta charset="utf-8" />
-<title>Layered Mindmap (Notion Embed)</title>
+<title>Layered Mindmap (Shift-drag to add child)</title>
 <style>
   html,body,#app{height:100%;margin:0}
   #toolbar{padding:8px;border-bottom:1px solid #e5e7eb;font:14px system-ui;display:flex;gap:8px;align-items:center}
-  #cy{height:calc(100% - 46px)}
+  #cy{height:calc(100% - 46px); user-select:none}
   button{padding:6px 10px;border:1px solid #d1d5db;border-radius:8px;background:#fff;cursor:pointer}
   #tooltip{
     position:absolute; pointer-events:none; background:#111827; color:#fff;
@@ -17,7 +17,7 @@
 
 <div id="toolbar">
   <strong>Mindmap</strong>
-  <span id="hint">Click empty space to add a node. Select a node first to add its child. Drag horizontally to reorder; layers snap vertically. Double-click to edit. Hover for description.</span>
+  <span id="hint">Shift + drag from a node to empty space → create child at drop. Drag nodes horizontally to reorder; layers snap vertically. Double-click to edit. Hover for description.</span>
   <div style="margin-left:auto;display:flex;gap:8px">
     <button id="center">Center</button>
     <button id="export">Export JSON</button>
@@ -36,11 +36,11 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 const GRAPH_ID = new URLSearchParams(location.search).get("graph") || "412dbeb5-7a9f-4bc7-a80a-8fd6e6d72465";
 
 /* Layer + size tuning */
-const LAYER_GAP = 70;       // vertical distance between layers (smaller = tighter)
-const FONT_BASE = 16;       // root font size
-const FONT_STEP = 2;        // shrink per layer
-const FONT_MIN  = 10;       // do not go below this
-const WIDTH_MAX = 240;      // max node width so deeper nodes look “tinier”
+const LAYER_GAP = 70;   // vertical distance between layers
+const FONT_BASE = 16;   // root font size
+const FONT_STEP = 2;    // shrink per layer
+const FONT_MIN  = 10;   // minimum font size
+const WIDTH_MAX = 240;  // max node width (helps deeper nodes look smaller)
 
 /*** ------- INIT ------- ***/
 const { createClient } = supabase; 
@@ -50,10 +50,9 @@ const nodesDS = new vis.DataSet([]);
 const edgesDS = new vis.DataSet([]);
 
 const net = new vis.Network(document.getElementById('cy'), { nodes: nodesDS, edges: edgesDS }, {
-  physics: { enabled: false },                   // we control positions
+  physics: { enabled: false },
   interaction: { hover: true, multiselect: true, tooltipDelay: 120 },
   edges: {
-    // no arrows property => no arrows
     smooth: { type: 'cubicBezier', forceDirection: 'vertical', roundness: 0.2 },
     color: { opacity: 0.6 }
   },
@@ -90,35 +89,24 @@ function computeRootId(){
   const roots = all.filter(id => !incoming.has(id));
   return roots[0] || all[0];
 }
-
 function buildDepths(){
   const root = computeRootId();
   const depth = {};
-  if (!root) return { root: null, depth };
+  if (!root) return { root:null, depth };
 
-  // adjacency (outgoing)
   const out = {};
-  edgesDS.forEach(e => {
-    (out[e.from] ||= []).push(e.to);
-  });
+  edgesDS.forEach(e => { (out[e.from] ||= []).push(e.to); });
 
-  // compute depths (BFS)
   const q = [root]; depth[root] = 0;
   while (q.length){
     const u = q.shift();
-    for (const v of (out[u] || [])){
-      if (depth[v] == null){
-        depth[v] = depth[u] + 1;
-        q.push(v);
-      }
+    for (const v of (out[u]||[])){
+      if (depth[v] == null){ depth[v] = depth[u] + 1; q.push(v); }
     }
   }
-  // any disconnected nodes -> layer 0
   nodesDS.forEach(n => { if (depth[n.id] == null) depth[n.id] = 0; });
-
   return { root, depth };
 }
-
 function applyLayersAndSizes(){
   const { depth } = buildDepths();
   const updates = [];
@@ -145,42 +133,65 @@ async function insertEdge(from, to){
   if (error) throw error;
 }
 
-/*** ------- INTERACTION ------- ***/
-// Click empty space -> add node (child of selected or of root)
-net.on('click', async (params) => {
-  if (params.nodes.length || params.edges.length) return; // only background clicks
-  const pos = params.pointer.canvas;
-  const selected = net.getSelectedNodes()[0] || null;
-  const root = computeRootId();
+/*** ------- CREATE-CHILD: SHIFT + DRAG FROM NODE ------- ***/
+const container = document.getElementById('cy');
+let createDrag = { active:false, from:null };
 
-  // First node becomes root
+container.addEventListener('pointerdown', (e) => {
+  if (!e.shiftKey) return;                       // only when Shift is held
+  const rect = container.getBoundingClientRect();
+  const domPt = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  const nodeId = net.getNodeAt(domPt);
+  if (!nodeId) return;
+  createDrag.active = true;
+  createDrag.from = nodeId;
+  e.preventDefault();                            // don’t start vis-network dragging
+});
+
+container.addEventListener('pointerup', async (e) => {
+  if (!createDrag.active) return;
+  const from = createDrag.from;
+  createDrag = { active:false, from:null };
+
+  const rect = container.getBoundingClientRect();
+  const domPt = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+
+  // if we released over another node, do nothing (no child creation)
+  const overNode = net.getNodeAt(domPt);
+  if (overNode) return;
+
+  // compute canvas coords and target layer
+  const canvasPt = net.DOMtoCanvas(domPt);
+  const parent = nodesDS.get(from);
+  const parentDepth = parent?.level ?? 0;
+  const d = parentDepth + 1;
+  const y = d * LAYER_GAP;
+  const x = canvasPt.x;
+
+  // First node case (no root yet): if nothing exists, make this the root
+  const root = computeRootId();
   if (!root){
-    const label = prompt("Root title?");
-    if (label == null) return;
-    const description = prompt("Description (optional):") || "";
-    await insertNode({ label, description, x: pos.x, y: 0 });
+    const label0 = prompt("Root title?");
+    if (label0 == null) return;
+    const desc0 = prompt("Description (optional):") || "";
+    await insertNode({ label: label0, description: desc0, x, y: 0 });
     return;
   }
 
-  // New child of selected (or root)
-  const parent = selected || root;
-  const parentNode = nodesDS.get(parent);
-  const parentDepth = parentNode?.level ?? 0;
-  const d = parentDepth + 1;
-  const y = d * LAYER_GAP;
-
+  // Create child node
   const label = prompt("Node title?");
   if (label == null) return;
   const description = prompt("Description (optional):") || "";
+  const row = await insertNode({ label, description, x, y });
+  await insertEdge(parent.id, row.id);
 
-  const row = await insertNode({ label, description, x: pos.x, y });
-  await insertEdge(parent, row.id);
-  // Local optimistic apply (server realtime also updates)
-  nodesDS.update({ id: row.id, label, description, x: pos.x, y, level: d, font: { size: Math.max(FONT_MIN, FONT_BASE - d*FONT_STEP) } });
-  edgesDS.update({ id: `tmp-${row.id}`, from: parent, to: row.id });
+  // optimistic local update
+  nodesDS.update({ id: row.id, label, description, x, y, level: d, font: { size: Math.max(FONT_MIN, FONT_BASE - d*FONT_STEP) } });
+  edgesDS.update({ id: `tmp-${row.id}`, from: parent.id, to: row.id });
   applyLayersAndSizes();
 });
 
+/*** ------- OTHER INTERACTIONS ------- ***/
 // Double-click node -> edit title/description
 net.on('doubleClick', async (p) => {
   if (!p.nodes.length) return;
@@ -192,13 +203,13 @@ net.on('doubleClick', async (p) => {
   if (error) alert(error.message);
 });
 
-// Drag horizontally -> persist X; snap Y to its layer
+// Normal drag -> reposition horizontally; snap Y to layer
 net.on('dragEnd', async (p) => {
   for (const id of p.nodes) {
     const d = nodesDS.get(id)?.level ?? 0;
     const snapY = d * LAYER_GAP;
     const pos = net.getPositions([id])[id];
-    nodesDS.update({ id, x: pos.x, y: snapY });     // visual snap
+    nodesDS.update({ id, x: pos.x, y: snapY });
     await sb.from('nodes').update({ x: pos.x, y: snapY }).eq('id', id);
   }
   hideTip();
@@ -231,6 +242,7 @@ document.getElementById('importFile').onchange = async (e) => {
   for (const ed of json.edges) {
     await sb.from('edges').insert({ id:ed.id, graph_id:GRAPH_ID, source:ed.from, target:ed.to });
   }
+  applyLayersAndSizes();
 };
 
 /*** ------- LOAD + REALTIME ------- ***/
@@ -265,3 +277,4 @@ sb.channel('realtime-graph')
   })
   .subscribe();
 </script>
+
