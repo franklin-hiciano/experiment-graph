@@ -1,0 +1,239 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Mindmap Editor (Notion Embed)</title>
+<style>
+  html,
+  body,
+  #app {
+    height: 100%;
+    margin: 0
+  }
+
+  #toolbar {
+    padding: 8px;
+    border-bottom: 1px solid #e5e7eb;
+    font: 14px system-ui;
+    display: flex;
+    gap: 8px;
+    align-items: center
+  }
+
+  #cy {
+    height: calc(100% - 46px)
+  }
+
+  button {
+    padding: 6px 10px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    background: #fff;
+    cursor: pointer
+  }
+
+  #tooltip {
+    position: absolute;
+    pointer-events: none;
+    background: #111827;
+    color: #fff;
+    padding: 6px 8px;
+    border-radius: 8px;
+    font: 12px system-ui;
+    max-width: 280px;
+    box-shadow: 0 10px 20px rgba(0, 0, 0, .12);
+    display: none;
+    transform: translate(8px, -8px);
+    white-space: pre-wrap;
+    line-height: 1.2;
+  }
+
+  #hint {
+    color: #6b7280
+  }
+</style>
+
+<div id="toolbar">
+  <strong>Mindmap</strong>
+  <span id="hint">Click empty space to add a node. Select a node first to add its child. Double-click a node to edit.
+    Hover shows description.</span>
+  <div style="margin-left:auto;display:flex;gap:8px">
+    <button id="center">Center</button>
+    <button id="export">Export JSON</button>
+    <input id="importFile" type="file" accept="application/json">
+  </div>
+</div>
+<div id="cy"></div>
+<div id="tooltip"></div>
+
+<script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+  /*** CONFIG ***/
+  const SUPABASE_URL = "https://gjdyushogvhuootdiwxz.supabase.co";
+  const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdqZHl1c2hvZ3ZodW9vdGRpd3h6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTY4NTE3NTMsImV4cCI6MjA3MjQyNzc1M30.52heLq-Ic5DIXCZV0tCiv_VhubkY2-v3arq7InoI-sE";
+  const GRAPH_ID = new URLSearchParams(location.search).get("graph") || "412dbeb5-7a9f-4bc7-a80a-8fd6e6d72465";
+
+  /*** INIT ***/
+  const {createClient} = supabase; const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  const nodesDS = new vis.DataSet([]); const edgesDS = new vis.DataSet([]);
+  const net = new vis.Network(document.getElementById('cy'), {nodes: nodesDS, edges: edgesDS}, {
+    physics: {enabled: false},
+    interaction: {hover: true, multiselect: true, tooltipDelay: 120},
+    layout: {improvedLayout: true},
+    edges: {
+      // no arrows property at all
+      smooth: {type: 'cubicBezier', forceDirection: 'horizontal'},
+      color: {opacity: 0.6}
+    },
+    nodes: {
+      shape: 'box',
+      borderWidth: 1,
+      margin: 8,
+      color: {background: '#FFFFFF', border: '#9CA3AF', highlight: {background: '#EEF2FF', border: '#6366F1'}},
+      font: {color: '#111827', face: 'system-ui', size: 14, multi: 'html'}
+    }
+  });
+
+  const tooltip = document.getElementById('tooltip');
+  function showTip(nodeId, pointerDOM) {
+    const n = nodesDS.get(nodeId);
+    const txt = (n?.description || '').trim();
+    if (!txt) {tooltip.style.display = 'none'; return;}
+    tooltip.textContent = txt;
+    tooltip.style.left = (pointerDOM.x + 12) + 'px';
+    tooltip.style.top = (pointerDOM.y - 12) + 'px';
+    tooltip.style.display = 'block';
+  }
+  function hideTip() {tooltip.style.display = 'none';}
+
+  /*** Helpers ***/
+  async function computeRootId() {
+    const ns = nodesDS.getIds(); if (ns.length === 0) return null;
+    const incoming = new Set(edgesDS.get().map(e => e.to));
+    const candidates = ns.filter(id => !incoming.has(id));
+    return candidates[0] || ns[0];
+  }
+  async function insertNode({label, description, x, y}) {
+    const {data: row, error} = await sb.from('nodes')
+      .insert({graph_id: GRAPH_ID, label, description, x, y})
+      .select().single();
+    if (error) throw error;
+    return row;
+  }
+  async function insertEdge(from, to) {
+    const {error} = await sb.from('edges').insert({graph_id: GRAPH_ID, source: from, target: to});
+    if (error) throw error;
+  }
+  function getPointerCanvas(params) {return params.pointer && params.pointer.canvas ? params.pointer.canvas : {x: 0, y: 0};}
+  function canvasToDOM(pt) {return net.canvasToDOM(pt);}
+
+  /*** Events: create node on background click (mind-map grow) ***/
+  net.on('click', async (params) => {
+    // Only when clicking empty space
+    if (params.nodes.length || params.edges.length) return;
+
+    const pos = getPointerCanvas(params);
+    const selected = net.getSelectedNodes()[0] || null;
+    let rootId = await computeRootId();
+
+    // First node -> root
+    if (!rootId) {
+      const label = prompt("Root title?");
+      if (label == null) return;
+      const description = prompt("Description (optional):") || "";
+      const row = await insertNode({label, description, x: pos.x, y: pos.y});
+      return; // no parent edge
+    }
+
+    // New child of selected (or root if none selected)
+    const parent = selected || rootId;
+    const label = prompt("Node title?");
+    if (label == null) return;
+    const description = prompt("Description (optional):") || "";
+    const row = await insertNode({label, description, x: pos.x, y: pos.y});
+    await insertEdge(parent, row.id);
+  });
+
+  /*** Edit node on double-click ***/
+  net.on('doubleClick', async (params) => {
+    if (!params.nodes.length) return;
+    const id = params.nodes[0];
+    const n = nodesDS.get(id);
+    const label = prompt("Edit title:", n.label ?? "") ?? n.label;
+    const description = prompt("Edit description:", n.description ?? "") ?? n.description;
+    const {error} = await sb.from('nodes').update({label, description}).eq('id', id);
+    if (error) alert(error.message);
+  });
+
+  /*** Drag -> persist x,y ***/
+  net.on('dragEnd', async (params) => {
+    for (const id of params.nodes) {
+      const p = net.getPositions([id])[id];
+      await sb.from('nodes').update({x: p.x, y: p.y}).eq('id', id);
+    }
+  });
+
+  /*** Hover tooltip ***/
+  net.on('hoverNode', (p) => {
+    const posCanvas = net.getPositions([p.node])[p.node];
+    const posDOM = canvasToDOM(posCanvas);
+    showTip(p.node, posDOM);
+  });
+  net.on('blurNode', hideTip);
+  net.on('zoom', hideTip); net.on('dragStart', hideTip);
+
+  /*** Controls ***/
+  document.getElementById('center').onclick = async () => {
+    net.fit({animation: {duration: 300, easingFunction: 'easeInOutQuad'}});
+  };
+
+  document.getElementById('export').onclick = () => {
+    const data = {nodes: nodesDS.get(), edges: edgesDS.get()};
+    const blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
+    const a = Object.assign(document.createElement('a'), {href: URL.createObjectURL(blob), download: 'mindmap.json'});
+    a.click();
+  };
+
+  document.getElementById('importFile').onchange = async (e) => {
+    const file = e.target.files[0]; if (!file) return;
+    const text = await file.text(); const json = JSON.parse(text);
+    await sb.from('edges').delete().eq('graph_id', GRAPH_ID);
+    await sb.from('nodes').delete().eq('graph_id', GRAPH_ID);
+    for (const n of json.nodes) {
+      await sb.from('nodes').insert({id: n.id, graph_id: GRAPH_ID, label: n.label, description: n.description || '', x: n.x, y: n.y});
+    }
+    for (const ed of json.edges) {
+      await sb.from('edges').insert({id: ed.id, graph_id: GRAPH_ID, source: ed.from, target: ed.to});
+    }
+  };
+
+  /*** Initial load ***/
+  async function load() {
+    const [{data: ns}, {data: es}] = await Promise.all([
+      sb.from('nodes').select("*").eq('graph_id', GRAPH_ID),
+      sb.from('edges').select("*").eq('graph_id', GRAPH_ID),
+    ]);
+    nodesDS.clear(); edgesDS.clear();
+    nodesDS.add((ns || []).map(n => ({id: n.id, label: n.label, description: n.description, x: n.x, y: n.y})));
+    edgesDS.add((es || []).map(e => ({id: e.id, from: e.source, to: e.target})));
+    net.stabilize();
+  }
+  load();
+
+  /*** Realtime sync ***/
+  sb.channel('realtime-graph')
+    .on('postgres_changes', {event: '*', schema: 'public', table: 'nodes', filter: `graph_id=eq.${GRAPH_ID}`}, (p) => {
+      const r = p.new ?? p.old;
+      if (p.eventType === 'INSERT' || p.eventType === 'UPDATE') {
+        nodesDS.update({id: r.id, label: r.label, description: r.description, x: r.x, y: r.y});
+      }
+      if (p.eventType === 'DELETE') nodesDS.remove(r.id);
+    })
+    .on('postgres_changes', {event: '*', schema: 'public', table: 'edges', filter: `graph_id=eq.${GRAPH_ID}`}, (p) => {
+      const r = p.new ?? p.old;
+      if (p.eventType === 'INSERT' || p.eventType === 'UPDATE') {
+        edgesDS.update({id: r.id, from: r.source, to: r.target});
+      }
+      if (p.eventType === 'DELETE') edgesDS.remove(r.id);
+    })
+    .subscribe();
+</script>
