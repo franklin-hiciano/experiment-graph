@@ -132,6 +132,7 @@
     <button id="right" title="Move right">➡️</button>
 
 
+    <button id="reparent" title="Change parent by name">🔀</button>
 
     <button id="del" class="danger" title="Delete subtree">🗑️</button>
     <span id="st" class="muted">Ready</span>
@@ -289,6 +290,125 @@
       return b ? b.content : m;  // leave token if nothing valid
     });
   }
+
+  // Build children map and descendant set
+  function childrenMap(edges) {
+    const map = new Map();
+    edges.forEach(e => {
+      if (!map.has(e.source)) map.set(e.source, []);
+      map.get(e.source).push(e.target);
+    });
+    return map;
+  }
+  function descendantsOf(startId, edges) {
+    const ch = childrenMap(edges);
+    const seen = new Set(), q = [startId];
+    while (q.length) {
+      const u = q.shift();
+      for (const v of (ch.get(u) || [])) {
+        if (!seen.has(v)) {
+          seen.add(v);
+          q.push(v);
+        }
+      }
+    }
+    return seen; // all descendants (not including startId)
+  }
+  async function parentOf(nodeId) {
+    const {data: edges = []} = await sb.from('edges').select('*').eq('graph_id', graphId);
+    const p = edges.find(e => e.target === nodeId)?.source || null;
+    return {parentId: p, edges};
+  }
+
+  const btnReparent = document.getElementById('reparent');
+
+  btnReparent.onclick = async () => {
+    // 1) Ask for a search term
+    const term = prompt('New parent name (search):');
+    if (term == null || !term.trim()) return;
+
+    // 2) Load current edges and block cycles
+    const {parentId: oldPid, edges} = await parentOf(node.id);
+    const desc = descendantsOf(node.id, edges); // cannot reparent into a descendant
+
+    // 3) Find candidate parents by name (case-insensitive)
+    const {data: candidates = []} = await sb
+      .from('nodes')
+      .select('id,label,deleted_at')
+      .eq('graph_id', graphId)
+      .ilike('label', `%${term.trim()}%`);
+
+    // Filter out self, deleted, and descendants
+    const options = candidates
+      .filter(r => !r.deleted_at)
+      .filter(r => r.id !== node.id && !desc.has(r.id));
+
+    if (options.length === 0) {
+      alert('No valid parent match found (or would create a cycle).');
+      return;
+    }
+
+    // 4) If multiple, let user pick by number
+    let chosen = options[0];
+    if (options.length > 1) {
+      const list = options
+        .slice(0, 10)
+        .map((r, i) => `${i + 1}. ${r.label}`)
+        .join('\n');
+      const pick = prompt(`Multiple matches:\n${list}\n\nPick # (1-${Math.min(10, options.length)}):`);
+      const idx = (parseInt(pick, 10) || 0) - 1;
+      if (idx < 0 || idx >= options.length) return;
+      chosen = options[idx];
+    }
+
+    // 5) No-op if already under this parent
+    if (oldPid && chosen.id === oldPid) {
+      msg('Already under that parent');
+      return;
+    }
+
+    // 6) Compute new sibling_order at the new parent (append to end)
+    const newSibs = edges.filter(e => e.source === chosen.id).map(e => e.target);
+    const newOrderIndex = newSibs.length;
+
+    // 7) Update sibling_order for the moving node
+    st.textContent = 'Saving…';
+    await sb.from('nodes').update({sibling_order: newOrderIndex}).eq('id', node.id);
+
+    // 8) Update the edge (move to new parent). If no existing edge, insert one.
+    const hasEdge = edges.some(e => e.target === node.id);
+    if (hasEdge) {
+      await sb.from('edges')
+        .update({source: chosen.id})
+        .eq('graph_id', graphId)
+        .eq('target', node.id);
+    } else {
+      await sb.from('edges')
+        .insert({graph_id: graphId, source: chosen.id, target: node.id});
+    }
+
+    // 9) Reindex old siblings to keep their sibling_order tidy
+    if (oldPid) {
+      const remain = edges
+        .filter(e => e.source === oldPid && e.target !== node.id)
+        .map(e => e.target);
+      if (remain.length) {
+        const {data: remNodes = []} = await sb
+          .from('nodes')
+          .select('id,sibling_order')
+          .in('id', remain)
+          .order('sibling_order', {ascending: true});
+        for (let i = 0; i < remNodes.length; i++) {
+          await sb.from('nodes').update({sibling_order: i}).eq('id', remNodes[i].id);
+        }
+      }
+    }
+
+    msg('Reparented');
+    // If preview is open and the note changed contextually, you can refresh it:
+    if (mode === 'prev') renderPreview().catch(() => { });
+  };
+
 
   async function renderPreview() {
     // If you have a PURIFY_CFG (to allow data:image/*), pass it here
