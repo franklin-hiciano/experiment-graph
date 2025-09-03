@@ -88,6 +88,9 @@
   <div id="preview"></div>
 
   <div id="bar">
+    <span id="tagdot" title="Right-click to cycle tag"
+      style="width:14px;height:14px;border-radius:9999px;border:1px solid #e5e7eb;display:inline-block"></span>
+
     <input id="name" placeholder="Node name" />
     <button id="left" title="Move left">⬅️</button>
     <button id="right" title="Move right">➡️</button>
@@ -108,6 +111,12 @@
   const SUPABASE_URL = "https://gjdyushogvhuootdiwxz.supabase.co";
   const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdqZHl1c2hvZ3ZodW9vdGRpd3h6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTY4NTE3NTMsImV4cCI6MjA3MjQyNzc1M30.52heLq-Ic5DIXCZV0tCiv_VhubkY2-v3arq7InoI-sE";
   const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+  const TAGS = [
+    null, "#8b5cf6", "#f59e0b", "#10b981", "#06b6d4",
+    "#ef4444", "#f472b6", "#94a3b8"
+  ];
+
 
   /* ---- dom ---- */
   const ed = document.getElementById('editor');
@@ -186,6 +195,14 @@
     }, 200);
   }
 
+  function paintDot() {
+    const c = TAGS[(node?.tag || 0) % TAGS.length];
+    const dot = document.getElementById('tagdot');
+    dot.style.background = c ? c : "transparent";
+    dot.style.borderColor = c ? c : "#e5e7eb";
+  }
+
+
   /* ---- load node ---- */
   async function load() {
     const {data: n, error} = await sb.from('nodes').select('*').eq('id', nodeId).single();
@@ -193,6 +210,7 @@
     node = n; graphId = n.graph_id;
     nameEl.value = n.label || '';
     ed.value = n.note_md || '';
+    paintDot();                      // NEW
     tokenFor.clear(); dataFor.clear(); imgSeq = 1;
     indexImages(ed.value);
     msg('Ready');
@@ -289,6 +307,17 @@
     await sb.from('nodes').update({deleted_at: new Date().toISOString()}).in('id', [...toDel]);
     msg('Deleted');
   };
+  const bar = document.getElementById('bar');
+  bar.addEventListener('contextmenu', async (e) => {
+    e.preventDefault();
+    const next = ((node?.tag || 0) + 1) % TAGS.length;
+    node.tag = next;
+    paintDot();
+    st.textContent = 'Saving…';
+    await sb.from('nodes').update({tag: next}).eq('id', node.id);
+    msg('Saved');
+  });
+
 
   /* ---- preview toggle; copy embed; Esc closes in parent ---- */
   btnMode.onclick = () => setMode(mode === 'edit' ? 'prev' : 'edit');
