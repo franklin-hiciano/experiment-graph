@@ -357,7 +357,7 @@
   }
 
   function absUrl(path) {return new URL(path, location.href).toString();}
-  function nodeViewUrl() {return absUrl('note.html?id=' + node.id);}
+  function nodeViewUrl() {return absUrl('toolbar.html?id=' + node.id);}
   function nodeEditUrl() {return absUrl('toolbar.html?id=' + node.id);}
   function nodeIframe() {
     const src = nodeViewUrl();
