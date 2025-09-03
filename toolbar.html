@@ -48,13 +48,13 @@
   #name {
     flex: 1;
     min-width: 120px;
-    padding: 6px 8px;
+    padding: 4px 6px;
     border: 1px solid #e5e7eb;
     border-radius: 8px
   }
 
   button {
-    padding: 6px 8px;
+    padding: 4px 6px;
     border: 1px solid #d1d5db;
     border-radius: 8px;
     background: #fff;
@@ -91,13 +91,21 @@
     <span id="tagdot" title="Right-click to cycle tag"
       style="width:14px;height:14px;border-radius:9999px;border:1px solid #e5e7eb;display:inline-block"></span>
 
+
     <input id="name" placeholder="Node name" />
+    <button id="add" title="Add child">➕</button>
+    <button id="insHL" title="Insert HL token">🔁</button>
+    <button id="copy" title="Copy embed link">🔗</button>
+    <button id="compact" title="Compact data-URI images in editor">🗜️</button>
+
+
+
+    <button id="mode" title="Preview">👁️</button>
     <button id="left" title="Move left">⬅️</button>
     <button id="right" title="Move right">➡️</button>
-    <button id="add" title="Add child">➕</button>
-    <button id="compact" title="Compact data-URI images in editor">🗜️</button>
-    <button id="mode" title="Preview">👁️</button>
-    <button id="copy" title="Copy embed link">🔗</button>
+
+
+
     <button id="del" class="danger" title="Delete subtree">🗑️</button>
     <span id="st" class="muted">Ready</span>
   </div>
@@ -167,12 +175,109 @@
   }
 
   /* ---- marked: default rendering (data-URIs show inline) ---- */
-  function renderPreview() {
-    const expanded = compact ? expandText(ed.value) : ed.value;
-    pv.innerHTML = DOMPurify.sanitize(marked.parse(expanded || ''));
+  async function expandHighlightRefs(markdown) {
+    // Collect the keys present as <<HL:123>>
+    const keys = [];
+    markdown.replace(HL_REF_RE, (_, k) => {keys.push(parseInt(k, 10)); return '';});
+    if (!keys.length) return markdown;
+
+    // Load edges + highlights for these keys
+    const [{data: edges = []}, {data: hs = []}] = await Promise.all([
+      sb.from('edges').select('source,target').eq('graph_id', graphId),
+      sb.from('highlights').select('node_id,key_int,max_up,content').eq('graph_id', graphId).in('key_int', keys)
+    ]);
+
+    // Build adjacency for downward BFS from current node
+    const down = new Map();
+    edges.forEach(e => {(down.get(e.source) || down.set(e.source, [])).get(e.source);});
+    // Fix: the above line just ensures map key; now push properly
+    edges.forEach(e => {
+      if (!down.has(e.source)) down.set(e.source, []);
+      down.get(e.source).push(e.target);
+    });
+
+    // Distance from this node to descendants
+    const dist = new Map([[node.id, 0]]);
+    const q = [node.id];
+    while (q.length) {
+      const u = q.shift();
+      for (const v of (down.get(u) || [])) {
+        if (!dist.has(v)) {
+          dist.set(v, dist.get(u) + 1);
+          q.push(v);
+        }
+      }
+    }
+
+    // Pick nearest valid highlight per key (respecting max_up)
+    const best = new Map(); // key -> content
+    hs.forEach(h => {
+      const d = dist.get(h.node_id);
+      if (d == null) return;
+      if (d <= (h.max_up || 1)) {
+        const cur = best.get(h.key_int);
+        if (!cur || d < cur.dist) best.set(h.key_int, {content: h.content, dist: d});
+      }
+    });
+
+    // Replace tokens
+    return markdown.replace(HL_REF_RE, (m, k) => {
+      const b = best.get(parseInt(k, 10));
+      return b ? b.content : m; // leave token if nothing valid
+    });
   }
 
+  async function renderPreview() {
+    // Expand compact IMG tokens and HL refs before parsing
+    const md0 = compact ? expandText(ed.value) : ed.value;
+    const md1 = await expandHighlightRefs(md0);
+    pv.innerHTML = DOMPurify.sanitize(marked.parse(md1 || ''));
+  }
+
+  // Add to HTML bar: <button id="insHL" title="Insert HL token">🔁</button>
+  const btnInsHL = document.getElementById('insHL');
+  btnInsHL.onclick = () => {
+    const k = prompt('Highlight number to reference? (e.g., 123)');
+    if (!k) return;
+    const t = `<<HL:${parseInt(k, 10)}>>`;
+    const s = ed.selectionStart, e = ed.selectionEnd, v = ed.value;
+    ed.value = v.slice(0, s) + t + v.slice(e);
+    ed.selectionStart = ed.selectionEnd = s + t.length;
+    ed.focus();
+    queueSave('doc');
+  };
+
+
+
   /* ---- helpers ---- */
+  /* ======= Highlight plumbing ======= */
+  /* Syntax:
+     {{HL:123|up=2}}
+     ... any markdown ...
+     {{/HL}}
+     - 123 is the highlight number (required, integer)
+     - up=2 is optional, defaults to 1
+  */
+  const HL_BLOCK_RE = /\{\{HL:(\d+)(?:\|up=(\d+))?\}\}([\s\S]*?)\{\{\/HL\}\}/g;
+  const HL_REF_RE = /<<HL:(\d+)>>/g;
+
+  function extractHighlights(md) {
+    const out = [];
+    let m;
+    while ((m = HL_BLOCK_RE.exec(md))) {
+      const key = parseInt(m[1], 10);
+      const up = m[2] ? parseInt(m[2], 10) : 1;
+      const content = (m[3] || '').trim();
+      if (!Number.isFinite(key) || key < 0) continue;
+      out.push({key, up, content});
+    }
+    return out;
+  }
+
+
+
+
+
   function msg(t) {st.textContent = t; if (t !== 'Saving…') setTimeout(() => {if (st.textContent === t) st.textContent = 'Ready';}, 1000);}
   function setMode(m) {
     mode = m;
@@ -188,6 +293,9 @@
       if (kind === 'doc') {
         update.note_md = compact ? expandText(ed.value) : ed.value; // never save compacted tokens
       }
+      await sb.from('nodes').update(update).eq('id', node.id);
+      await syncHighlights(ed.value);  // <-- add this line
+
       if (kind === 'name') {update.label = nameEl.value;}
       await sb.from('nodes').update(update).eq('id', node.id);
       msg('Saved');
@@ -246,6 +354,90 @@
     }
     // allow normal text paste otherwise
   });
+
+  async function syncHighlights(markdown) {
+    // Find current blocks in editor (expand any compact IMG tokens first)
+    const expandedMd = compact ? expandText(markdown) : markdown;
+    const blocks = extractHighlights(expandedMd);
+
+    // Existing highlights for this node
+    const {data: existing = []} = await sb
+      .from('highlights')
+      .select('id,key_int,max_up,content')
+      .eq('graph_id', graphId)
+      .eq('node_id', node.id);
+
+    const extByKey = new Map(existing.map(h => [h.key_int, h]));
+
+    // Upsert new/changed blocks; collect "first-time" keys
+    const firstTimeKeys = [];
+    for (const b of blocks) {
+      const prev = extByKey.get(b.key);
+      if (!prev) {
+        firstTimeKeys.push(b.key);
+        await sb.from('highlights').insert({
+          graph_id: graphId, node_id: node.id,
+          key_int: b.key, max_up: b.up, content: b.content
+        });
+      } else {
+        if (prev.max_up !== b.up || prev.content !== b.content) {
+          await sb.from('highlights').update({
+            max_up: b.up, content: b.content, updated_at: new Date().toISOString()
+          }).eq('id', prev.id);
+        }
+        extByKey.delete(b.key);
+      }
+    }
+
+    // Delete removed blocks
+    for (const [k, h] of extByKey) {
+      await sb.from('highlights').delete().eq('id', h.id);
+    }
+
+    // For first-time keys, offer to auto-insert tokens into ancestors up to max_up
+    if (firstTimeKeys.length) {
+      // Load edges once
+      const {data: edges = []} = await sb.from('edges').select('source,target').eq('graph_id', graphId);
+      const parentMap = new Map();  // child -> parent
+      edges.forEach(e => parentMap.set(e.target, e.source || null));
+
+      // Walk up ancestors with distance
+      function ancestorsUpTo(startId, up) {
+        const res = [];
+        let cur = startId, d = 0;
+        while (d < up) {
+          const p = parentMap.get(cur);
+          if (!p) break;
+          d += 1;
+          res.push({id: p, dist: d});
+          cur = p;
+        }
+        return res;
+      }
+
+      // For each first-time key: find its block to know max_up
+      for (const k of firstTimeKeys) {
+        const blk = blocks.find(b => b.key === k);
+        if (!blk) continue;
+        const ancestors = ancestorsUpTo(node.id, blk.up);
+
+        // Ask per parent whether to insert a token if not already present
+        for (const {id: pid} of ancestors) {
+          const {data: pnode, error: pnerr} = await sb.from('nodes').select('*').eq('id', pid).single();
+          if (pnerr || !pnode) continue;
+          const hasRef = (pnode.note_md || '').includes(`<<HL:${k}>>`);
+          if (!hasRef) {
+            const ok = confirm(`Add highlight <<HL:${k}>> to parent "${pnode.label || '(untitled)'}"?`);
+            if (ok) {
+              const updated = (pnode.note_md || '') + `\n\n<<HL:${k}>>\n`;
+              await sb.from('nodes').update({note_md: updated}).eq('id', pid);
+            }
+          }
+        }
+      }
+    }
+  }
+
 
   /* ---- compact toggle (editor-only) ---- */
   btnCompact.onclick = () => {
@@ -320,7 +512,17 @@
 
 
   /* ---- preview toggle; copy embed; Esc closes in parent ---- */
-  btnMode.onclick = () => setMode(mode === 'edit' ? 'prev' : 'edit');
+  btnMode.onclick = async () => {
+    if (mode === 'edit') {
+      mode = 'prev'; ed.style.display = 'none'; pv.style.display = 'block';
+      btnMode.textContent = '✏️'; btnMode.title = 'Edit';
+      await renderPreview();
+    } else {
+      mode = 'edit'; ed.style.display = 'block'; pv.style.display = 'none';
+      btnMode.textContent = '👁️'; btnMode.title = 'Preview';
+    }
+  };
+
   btnCopy.onclick = async () => {
     const url = new URL(location.href); url.search = ''; url.searchParams.set('id', nodeId);
     await navigator.clipboard.writeText(url.toString()); msg('Link copied');
