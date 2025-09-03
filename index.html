@@ -367,14 +367,45 @@
   }
 
   async function load() {
-    const [ns, es] = await Promise.all([
-      sb.from('nodes').select('*').eq('graph_id', GRAPH_ID).is('deleted_at', null),
-      sb.from('edges').select('*').eq('graph_id', GRAPH_ID),
-    ]);
-    N.clear(); (ns.data || []).forEach(n => N.set(n.id, norm(n)));
-    E = (es.data || []).map(e => ({source: e.source, target: e.target}));
-    if (N.size === 0) {const {data: r} = await sb.from('nodes').insert({graph_id: GRAPH_ID, label: 'Root'}).select().single(); N.set(r.id, norm(r));}
+    // fetch current nodes/edges (never assume data is present)
+    const {data: ns = [], error: nerr} =
+      await sb.from('nodes').select('*').eq('graph_id', GRAPH_ID).is('deleted_at', null);
+    const {data: es = [], error: eerr} =
+      await sb.from('edges').select('*').eq('graph_id', GRAPH_ID);
+
+    N.clear(); ns.forEach(n => N.set(n.id, norm(n)));
+    E = es.map(e => ({source: e.source, target: e.target}));
+
+    // If graph is empty, try to seed a Root node—but never assume success.
+    if (ns.length === 0) {
+      // (optional) ensure the graph row exists; ignore errors if you don't use a graphs table
+      try {
+        const {data: g} = await sb.from('graphs').select('id').eq('id', GRAPH_ID).maybeSingle?.() ?? {};
+        if (!g) {
+          await sb.from('graphs').insert({id: GRAPH_ID, name: 'Untitled'});
+        }
+      } catch (_) { }
+
+      // try to create a root node
+      let root = null;
+      try {
+        const {data, error} = await sb.from('nodes')
+          .insert({graph_id: GRAPH_ID, label: 'Root', sibling_order: 0, note_md: ''})
+          .select()
+          .maybeSingle?.() ?? {};
+        if (!error && data) root = data;
+      } catch (_) { }
+
+      // if insert failed (RLS/FK/etc), bail gracefully without crashing
+      if (!root) {
+        console.warn('Root seed failed (ok for locked graphs).');
+        return; // renderAll() caller should handle empty N (or you can call it here to clear view)
+      }
+
+      N.set(root.id, norm(root));
+    }
   }
+
   function layout() {buildDepths(); assignAngles(); place();}
   function renderAll(center = true) {layout(); drawBands(); drawEdges(); drawNodes(); if (center) {const w = svg.node().clientWidth; svg.call(zoom.transform, d3.zoomIdentity.translate(w / 2, 40).scale(1));} }
 
