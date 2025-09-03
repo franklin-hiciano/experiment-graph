@@ -167,6 +167,18 @@
   const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdqZHl1c2hvZ3ZodW9vdGRpd3h6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTY4NTE3NTMsImV4cCI6MjA3MjQyNzc1M30.52heLq-Ic5DIXCZV0tCiv_VhubkY2-v3arq7InoI-sE";
   const GRAPH_ID = new URLSearchParams(location.search).get("graph") || "412dbeb5-7a9f-4bc7-a80a-8fd6e6d72465";
   const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  // nice, gentle tag colors; 0 = off
+  const TAGS = [
+    null,           // 0 = no tag
+    "#8b5cf6",      // violet-500
+    "#f59e0b",      // amber-500
+    "#10b981",      // emerald-500
+    "#06b6d4",      // cyan-500
+    "#ef4444",      // red-500
+    "#f472b6",      // pink-400
+    "#94a3b8"       // slate-400
+  ];
+
 
   /* ===== layout constants ===== */
   const STEP = 120;
@@ -244,21 +256,63 @@
   }
   function drawNodes() {
     const data = [...N.values()];
+
+    // tag dots
+    const dots = gNodes.selectAll("circle.tagdot")
+      .data(data.filter(d => (d.tag || 0) > 0), d => d.id);
+
+    dots.enter().append("circle")
+      .attr("class", "tagdot")
+      .attr("r", 4)
+      .style("pointer-events", "none")
+      .merge(dots)
+      .attr("cx", d => (pos[d.id]?.x || 0) - 9)
+      .attr("cy", d => (pos[d.id]?.y || 0) - 9)
+      .attr("fill", d => TAGS[d.tag % TAGS.length] || "transparent");
+
+    dots.exit().remove();
+
+    // labels
     const n = gNodes.selectAll("text.node").data(data, d => d.id);
-    n.enter().append("text").attr("class", "node").attr("text-anchor", "middle").attr("dominant-baseline", "middle")
-      .on("click", (ev, d) => {   // open embedded toolbar (by URI id)
+    n.enter().append("text")
+      .attr("class", "node")
+      .attr("text-anchor", "middle")
+      .attr("dominant-baseline", "middle")
+      .on("click", async (ev, d) => {                   // open toolbar
         ev.stopPropagation();
         sel = d.id; drawNodes();
-        document.getElementById('tools').src = new URL('toolbar.html?id=' + d.id, location.href).toString();
+        document.getElementById('tools').src =
+          new URL('toolbar.html?id=' + d.id, location.href).toString();
         document.getElementById('panel').style.display = 'block';
       })
+      .on("dblclick", async (ev, d) => {                 // add child
+        ev.stopPropagation();
+        const title = prompt("New node title?"); if (title == null) return;
+        const cnt = kids(d.id).length;
+        const {data: nw} = await sb.from('nodes')
+          .insert({graph_id: GRAPH_ID, label: title, sibling_order: cnt, note_md: ''})
+          .select().single();
+        await sb.from('edges').insert({graph_id: GRAPH_ID, source: d.id, target: nw.id});
+        await load(); renderAll(false);
+        sel = nw.id; drawNodes();
+      })
+      .on("contextmenu", async (ev, d) => {             // cycle tag
+        ev.preventDefault();
+        const next = ((byId(d.id).tag || 0) + 1) % TAGS.length;
+        await sb.from('nodes').update({tag: next}).eq('id', d.id);
+        byId(d.id).tag = next;                           // optimistic
+        drawNodes();
+      })
       .merge(n)
-      .attr("x", d => pos[d.id]?.x || 0).attr("y", d => pos[d.id]?.y || 0)
+      .attr("x", d => pos[d.id]?.x || 0)
+      .attr("y", d => pos[d.id]?.y || 0)
       .classed("selected", d => d.id === sel)
       .style("font-size", d => `${Math.max(MINF, FONT - (depth[d.id] || 0) * SHRINK)}px`)
       .text(d => d.label || "•");
+
     n.exit().remove();
   }
+
 
   /* ===== zoom & click-off to close panel ===== */
   const zoom = d3.zoom().scaleExtent([0.3, 3]).on("zoom", ev => {g.attr("transform", ev.transform); const y = ev.transform.y; if (y < 8) {const z = d3.zoomTransform(svg.node()); svg.call(zoom.transform, d3.zoomIdentity.translate(z.x, z.y + (8 - y)).scale(z.k));} });
@@ -303,7 +357,15 @@
   });
 
   /* ===== IO + realtime ===== */
-  function norm(n) {return {id: n.id, graph_id: n.graph_id ?? GRAPH_ID, label: n.label ?? 'Untitled', note_md: n.note_md ?? '', sibling_order: n.sibling_order ?? 0, deleted_at: n.deleted_at ?? null};}
+  function norm(n) {
+    return {
+      id: n.id, graph_id: n.graph_id ?? GRAPH_ID, label: n.label ?? 'Untitled',
+      note_md: n.note_md ?? '', sibling_order: n.sibling_order ?? 0,
+      share_token: n.share_token ?? null, deleted_at: n.deleted_at ?? null,
+      tag: n.tag ?? 0
+    };
+  }
+
   async function load() {
     const [ns, es] = await Promise.all([
       sb.from('nodes').select('*').eq('graph_id', GRAPH_ID).is('deleted_at', null),
