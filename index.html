@@ -1,280 +1,250 @@
 <!doctype html>
 <meta charset="utf-8" />
-<title>Layered Mindmap (Shift-drag to add child)</title>
+<title>Radial Mindmap — viewer (minimal)</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
 <style>
-  html,body,#app{height:100%;margin:0}
-  #toolbar{padding:8px;border-bottom:1px solid #e5e7eb;font:14px system-ui;display:flex;gap:8px;align-items:center}
-  #cy{height:calc(100% - 46px); user-select:none}
-  button{padding:6px 10px;border:1px solid #d1d5db;border-radius:8px;background:#fff;cursor:pointer}
-  #tooltip{
-    position:absolute; pointer-events:none; background:#111827; color:#fff;
-    padding:6px 8px; border-radius:8px; font:12px system-ui; max-width:280px;
-    box-shadow:0 10px 20px rgba(0,0,0,.12); display:none; transform:translate(8px, -8px);
-    white-space:pre-wrap; line-height:1.2;
+  html,
+  body {
+    height: 100%;
+    margin: 0;
+    font: 14px system-ui, -apple-system, Segoe UI, Roboto
   }
-  #hint{color:#6b7280}
+
+  #wrap {
+    position: relative;
+    height: 100%
+  }
+
+  #svg {
+    width: 100%;
+    height: 100%;
+    display: block;
+    background: #fff
+  }
+
+  .edge {
+    fill: none;
+    stroke: #64748b;
+    stroke-width: 1.25;
+    opacity: .85;
+    pointer-events: none
+  }
+
+  .band {
+    vector-effect: non-scaling-stroke;
+    pointer-events: none
+  }
+
+  .node {
+    user-select: none;
+    fill: #111827;
+    cursor: pointer
+  }
+
+  .node.selected {
+    font-weight: 700;
+    fill: #1f2937
+  }
+
+  /* embedded toolbar panel (iframe only; no header/close) */
+  #panel {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    width: 520px;
+    height: 420px;
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    box-shadow: 0 16px 36px rgba(0, 0, 0, .12);
+    display: none;
+    overflow: hidden;
+    z-index: 10
+  }
+
+  #tools {
+    width: 100%;
+    height: 100%;
+    border: 0
+  }
 </style>
 
-<div id="toolbar">
-  <strong>Mindmap</strong>
-  <span id="hint">Shift + drag from a node to empty space → create child at drop. Drag nodes horizontally to reorder; layers snap vertically. Double-click to edit. Hover for description.</span>
-  <div style="margin-left:auto;display:flex;gap:8px">
-    <button id="center">Center</button>
-    <button id="export">Export JSON</button>
-    <input id="importFile" type="file" accept="application/json">
-  </div>
+<div id="wrap">
+  <svg id="svg"></svg>
+  <div id="panel"><iframe id="tools"></iframe></div>
 </div>
-<div id="cy"></div>
-<div id="tooltip"></div>
 
-<script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
-/*** ------- CONFIG ------- ***/
-const SUPABASE_URL = "https://gjdyushogvhuootdiwxz.supabase.co";
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdqZHl1c2hvZ3ZodW9vdGRpd3h6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTY4NTE3NTMsImV4cCI6MjA3MjQyNzc1M30.52heLq-Ic5DIXCZV0tCiv_VhubkY2-v3arq7InoI-sE";
-const GRAPH_ID = new URLSearchParams(location.search).get("graph") || "412dbeb5-7a9f-4bc7-a80a-8fd6e6d72465";
+  /* ===== config ===== */
+  const SUPABASE_URL = "https://gjdyushogvhuootdiwxz.supabase.co";
+  const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdqZHl1c2hvZ3ZodW9vdGRpd3h6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTY4NTE3NTMsImV4cCI6MjA3MjQyNzc1M30.52heLq-Ic5DIXCZV0tCiv_VhubkY2-v3arq7InoI-sE";
+  const GRAPH_ID = new URLSearchParams(location.search).get("graph") || "412dbeb5-7a9f-4bc7-a80a-8fd6e6d72465";
+  const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-/* Layer + size tuning */
-const LAYER_GAP = 70;   // vertical distance between layers
-const FONT_BASE = 16;   // root font size
-const FONT_STEP = 2;    // shrink per layer
-const FONT_MIN  = 10;   // minimum font size
-const WIDTH_MAX = 240;  // max node width (helps deeper nodes look smaller)
+  /* ===== layout constants ===== */
+  const STEP = 120;
+  const ANG0 = 0, ANG1 = Math.PI;
+  const ROT = 0;   // rotate +90° so we’re the bottom semicircle
+  const FONT = 16, SHRINK = 2, MINF = 10;
 
-/*** ------- INIT ------- ***/
-const { createClient } = supabase; 
-const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  /* ===== state ===== */
+  const svg = d3.select("#svg");
+  const g = svg.append("g"), gBands = g.append("g"), gEdges = g.append("g"), gNodes = g.append("g");
+  let N = new Map(), E = [], depth = {}, angle = {}, pos = {}, sel = null;
 
-const nodesDS = new vis.DataSet([]);
-const edgesDS = new vis.DataSet([]);
+  /* ===== helpers ===== */
+  const byId = id => N.get(id);
+  const kids = id => E.filter(e => e.source === id).map(e => e.target).filter(k => N.has(k));
+  const rootId = () => {const inc = new Set(E.map(e => e.target)); for (const id of N.keys()) if (!inc.has(id)) return id; return [...N.keys()][0] || null;}
+  const ring = d => d * STEP;
 
-const net = new vis.Network(document.getElementById('cy'), { nodes: nodesDS, edges: edgesDS }, {
-  physics: { enabled: false },
-  interaction: { hover: true, multiselect: true, tooltipDelay: 120 },
-  edges: {
-    smooth: { type: 'cubicBezier', forceDirection: 'vertical', roundness: 0.2 },
-    color: { opacity: 0.6 }
-  },
-  nodes: {
-    shape: 'box',
-    borderWidth: 1,
-    margin: 8,
-    widthConstraint: { maximum: WIDTH_MAX },
-    color: { background: '#FFFFFF', border: '#9CA3AF', highlight: { background:'#EEF2FF', border:'#6366F1' } },
-    font: { color: '#111827', face: 'system-ui', size: FONT_BASE, multi: 'html' }
-  }
-});
-
-/*** ------- TOOLTIP ------- ***/
-const tooltip = document.getElementById('tooltip');
-function showTip(nodeId){
-  const n = nodesDS.get(nodeId);
-  const txt = (n?.description || '').trim();
-  if(!txt){ tooltip.style.display='none'; return; }
-  const posCanvas = net.getPositions([nodeId])[nodeId];
-  const posDOM = net.canvasToDOM(posCanvas);
-  tooltip.textContent = txt;
-  tooltip.style.left = (posDOM.x + 12) + 'px';
-  tooltip.style.top  = (posDOM.y - 12) + 'px';
-  tooltip.style.display = 'block';
-}
-function hideTip(){ tooltip.style.display='none'; }
-
-/*** ------- GRAPH UTILS ------- ***/
-function computeRootId(){
-  const all = nodesDS.getIds();
-  if (all.length === 0) return null;
-  const incoming = new Set(edgesDS.get().map(e => e.to));
-  const roots = all.filter(id => !incoming.has(id));
-  return roots[0] || all[0];
-}
-function buildDepths(){
-  const root = computeRootId();
-  const depth = {};
-  if (!root) return { root:null, depth };
-
-  const out = {};
-  edgesDS.forEach(e => { (out[e.from] ||= []).push(e.to); });
-
-  const q = [root]; depth[root] = 0;
-  while (q.length){
-    const u = q.shift();
-    for (const v of (out[u]||[])){
-      if (depth[v] == null){ depth[v] = depth[u] + 1; q.push(v); }
+  /* ===== layout ===== */
+  function buildDepths() {const r = rootId(); depth = {}; if (!r) return; depth[r] = 0; const q = [r]; while (q.length) {const u = q.shift(); for (const v of kids(u)) {depth[v] = (depth[u] || 0) + 1; q.push(v);} } N.forEach((_, id) => {if (depth[id] == null) depth[id] = 0;});}
+  function assignAngles() {
+    angle = {};
+    function rec(id, a0, a1) {
+      angle[id] = (a0 + a1) / 2;
+      const cs = kids(id).map(cid => byId(cid)).sort((A, B) => (A.sibling_order ?? 0) - (B.sibling_order ?? 0) || String(A.label).localeCompare(String(B.label))).map(n => n.id);
+      if (!cs.length) return;
+      const step = (a1 - a0) / cs.length; cs.forEach((cid, i) => rec(cid, a0 + i * step, a0 + (i + 1) * step));
     }
+    const r = rootId(); if (r) rec(r, ANG0, ANG1);
   }
-  nodesDS.forEach(n => { if (depth[n.id] == null) depth[n.id] = 0; });
-  return { root, depth };
-}
-function applyLayersAndSizes(){
-  const { depth } = buildDepths();
-  const updates = [];
-  nodesDS.forEach(n => {
-    const d = depth[n.id] ?? 0;
-    const y = d * LAYER_GAP;
-    const f = Math.max(FONT_MIN, FONT_BASE - d * FONT_STEP);
-    updates.push({ id: n.id, y, level: d, font: { size: f } });
+  // Bands
+
+
+  // Positions:
+  function place() {
+    pos = {};
+    N.forEach((n, id) => {
+      const d = depth[id] || 0;
+      const a = (angle[id] ?? Math.PI / 2) + ROT;  // rotate
+      const R = d ? ring(d) : 0;
+      pos[id] = {x: R * Math.cos(a), y: R * Math.sin(a)};
+    });
+  }
+
+
+
+  /* ===== draw ===== */
+  function drawBands() {
+    const maxD = Math.max(0, ...Object.values(depth));
+    const data = d3.range(1, maxD + 1);
+
+    // Shift by -π/2 so 0..π (node space) maps to bottom half in d3.arc space
+    const bandArc = d3.arc()
+      .startAngle(ANG0 + Math.PI / 2)  // -π/2 .. +π/2  => bottom semicircle
+      .endAngle(ANG1 + Math.PI / 2)
+      .innerRadius(d => ring(d - 1))
+      .outerRadius(d => ring(d));
+
+    const b = gBands.selectAll("path.band").data(data, d => d);
+    b.enter().append("path").attr("class", "band")
+      .merge(b)
+      .attr("d", bandArc)
+      .attr("fill", d => ["rgba(91,33,182,.10)", "rgba(76,29,149,.15)"][(d - 1) % 2])
+      .attr("stroke", "rgba(76,29,149,.35)").attr("stroke-width", 0.7);
+    b.exit().remove();
+  }
+
+
+
+  function drawEdges() {
+    const s = gEdges.selectAll("path.edge").data(E.filter(e => N.has(e.source) && N.has(e.target)), d => d.source + "→" + d.target);
+    s.enter().append("path").attr("class", "edge")
+      .merge(s).attr("d", d => {const a = pos[d.source], b = pos[d.target]; if (!a || !b) return ""; const m = {x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 - .15 * Math.hypot(a.x - b.x, a.y - b.y)}; return `M${a.x},${a.y} Q${m.x},${m.y} ${b.x},${b.y}`;});
+    s.exit().remove();
+  }
+  function drawNodes() {
+    const data = [...N.values()];
+    const n = gNodes.selectAll("text.node").data(data, d => d.id);
+    n.enter().append("text").attr("class", "node").attr("text-anchor", "middle").attr("dominant-baseline", "middle")
+      .on("click", (ev, d) => {   // open embedded toolbar (by URI id)
+        ev.stopPropagation();
+        sel = d.id; drawNodes();
+        document.getElementById('tools').src = new URL('toolbar.html?id=' + d.id, location.href).toString();
+        document.getElementById('panel').style.display = 'block';
+      })
+      .merge(n)
+      .attr("x", d => pos[d.id]?.x || 0).attr("y", d => pos[d.id]?.y || 0)
+      .classed("selected", d => d.id === sel)
+      .style("font-size", d => `${Math.max(MINF, FONT - (depth[d.id] || 0) * SHRINK)}px`)
+      .text(d => d.label || "•");
+    n.exit().remove();
+  }
+
+  /* ===== zoom & click-off to close panel ===== */
+  const zoom = d3.zoom().scaleExtent([0.3, 3]).on("zoom", ev => {g.attr("transform", ev.transform); const y = ev.transform.y; if (y < 8) {const z = d3.zoomTransform(svg.node()); svg.call(zoom.transform, d3.zoomIdentity.translate(z.x, z.y + (8 - y)).scale(z.k));} });
+  svg.call(zoom);
+  document.addEventListener('click', (e) => {
+    const panel = document.getElementById('panel');
+    if (panel.style.display === 'block' && !panel.contains(e.target) && e.target !== svg.node()) {
+      panel.style.display = 'none';
+    }
   });
-  nodesDS.update(updates);
-  net.redraw();
-}
 
-/*** ------- DB HELPERS ------- ***/
-async function insertNode({label, description, x, y}){
-  const { data: row, error } = await sb.from('nodes')
-    .insert({ graph_id: GRAPH_ID, label, description, x, y })
-    .select().single();
-  if(error) throw error;
-  return row;
-}
-async function insertEdge(from, to){
-  const { error } = await sb.from('edges').insert({ graph_id: GRAPH_ID, source: from, target: to });
-  if (error) throw error;
-}
+  /* ===== double-click background: create node on ring edge at angle ===== */
+  svg.on("dblclick", async (ev) => {
+    if (ev.target !== svg.node()) return;                   // only background
+    const p = d3.pointer(ev, svg.node());
+    const [x, y] = d3.zoomTransform(svg.node()).invert(p);
+    const r = Math.hypot(x, y);
+    let d = Math.round(r / STEP); if (d < 1) d = 1;                   // nearest ring (>=1)
+    let a = Math.atan2(y, x) - ROT;           // undo the visual rotation
+    while (a < ANG0) a += 2 * Math.PI;           // normalize
+    while (a > ANG1) a -= 2 * Math.PI;
+    a = Math.max(ANG0, Math.min(ANG1, a));     // clamp to [0, π]
+    const parent = sel || rootId(); if (!parent) return;
 
-/*** ------- CREATE-CHILD: SHIFT + DRAG FROM NODE ------- ***/
-const container = document.getElementById('cy');
-let createDrag = { active:false, from:null };
+    // find insertion index by angle among siblings
+    const ks = kids(parent);
+    const ordered = ks.slice().sort((i, j) => (angle[i] ?? 0) - (angle[j] ?? 0));
+    let idx = ordered.findIndex(k => a < (angle[k] ?? 0)); if (idx < 0) idx = ordered.length;
 
-container.addEventListener('pointerdown', (e) => {
-  if (!e.shiftKey) return;                       // only when Shift is held
-  const rect = container.getBoundingClientRect();
-  const domPt = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-  const nodeId = net.getNodeAt(domPt);
-  if (!nodeId) return;
-  createDrag.active = true;
-  createDrag.from = nodeId;
-  e.preventDefault();                            // don’t start vis-network dragging
-});
+    const title = prompt("New node title?"); if (title == null) return;
+    const {data: nw} = await sb.from('nodes').insert({graph_id: GRAPH_ID, label: title, sibling_order: idx, note_md: ''}).select().single();
+    await sb.from('edges').insert({graph_id: GRAPH_ID, source: parent, target: nw.id});
 
-container.addEventListener('pointerup', async (e) => {
-  if (!createDrag.active) return;
-  const from = createDrag.from;
-  createDrag = { active:false, from:null };
-
-  const rect = container.getBoundingClientRect();
-  const domPt = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-
-  // if we released over another node, do nothing (no child creation)
-  const overNode = net.getNodeAt(domPt);
-  if (overNode) return;
-
-  // compute canvas coords and target layer
-  const canvasPt = net.DOMtoCanvas(domPt);
-  const parent = nodesDS.get(from);
-  const parentDepth = parent?.level ?? 0;
-  const d = parentDepth + 1;
-  const y = d * LAYER_GAP;
-  const x = canvasPt.x;
-
-  // First node case (no root yet): if nothing exists, make this the root
-  const root = computeRootId();
-  if (!root){
-    const label0 = prompt("Root title?");
-    if (label0 == null) return;
-    const desc0 = prompt("Description (optional):") || "";
-    await insertNode({ label: label0, description: desc0, x, y: 0 });
-    return;
-  }
-
-  // Create child node
-  const label = prompt("Node title?");
-  if (label == null) return;
-  const description = prompt("Description (optional):") || "";
-  const row = await insertNode({ label, description, x, y });
-  await insertEdge(parent.id, row.id);
-
-  // optimistic local update
-  nodesDS.update({ id: row.id, label, description, x, y, level: d, font: { size: Math.max(FONT_MIN, FONT_BASE - d*FONT_STEP) } });
-  edgesDS.update({ id: `tmp-${row.id}`, from: parent.id, to: row.id });
-  applyLayersAndSizes();
-});
-
-/*** ------- OTHER INTERACTIONS ------- ***/
-// Double-click node -> edit title/description
-net.on('doubleClick', async (p) => {
-  if (!p.nodes.length) return;
-  const id = p.nodes[0];
-  const n = nodesDS.get(id);
-  const label = prompt("Edit title:", n.label ?? "") ?? n.label;
-  const description = prompt("Edit description:", n.description ?? "") ?? n.description;
-  const { error } = await sb.from('nodes').update({ label, description }).eq('id', id);
-  if (error) alert(error.message);
-});
-
-// Normal drag -> reposition horizontally; snap Y to layer
-net.on('dragEnd', async (p) => {
-  for (const id of p.nodes) {
-    const d = nodesDS.get(id)?.level ?? 0;
-    const snapY = d * LAYER_GAP;
-    const pos = net.getPositions([id])[id];
-    nodesDS.update({ id, x: pos.x, y: snapY });
-    await sb.from('nodes').update({ x: pos.x, y: snapY }).eq('id', id);
-  }
-  hideTip();
-});
-
-// Hover tooltip
-net.on('hoverNode', (p) => showTip(p.node));
-net.on('blurNode', hideTip);
-net.on('zoom', hideTip);
-net.on('dragStart', hideTip);
-
-/*** ------- TOP BAR ------- ***/
-document.getElementById('center').onclick = () => {
-  net.fit({ animation: { duration: 300, easingFunction: 'easeInOutQuad' }});
-};
-document.getElementById('export').onclick = () => {
-  const data = { nodes: nodesDS.get(), edges: edgesDS.get().map(e => ({...e, label: undefined})) };
-  const blob = new Blob([JSON.stringify(data, null, 2)], {type:'application/json'});
-  const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: 'mindmap.json' });
-  a.click();
-};
-document.getElementById('importFile').onchange = async (e) => {
-  const file = e.target.files[0]; if (!file) return;
-  const text = await file.text(); const json = JSON.parse(text);
-  await sb.from('edges').delete().eq('graph_id', GRAPH_ID);
-  await sb.from('nodes').delete().eq('graph_id', GRAPH_ID);
-  for (const n of json.nodes) {
-    await sb.from('nodes').insert({ id:n.id, graph_id:GRAPH_ID, label:n.label, description:n.description||'', x:n.x, y:n.y });
-  }
-  for (const ed of json.edges) {
-    await sb.from('edges').insert({ id:ed.id, graph_id:GRAPH_ID, source:ed.from, target:ed.to });
-  }
-  applyLayersAndSizes();
-};
-
-/*** ------- LOAD + REALTIME ------- ***/
-async function load() {
-  const [{ data: ns }, { data: es }] = await Promise.all([
-    sb.from('nodes').select("*").eq('graph_id', GRAPH_ID),
-    sb.from('edges').select("*").eq('graph_id', GRAPH_ID),
-  ]);
-  nodesDS.clear(); edgesDS.clear();
-  nodesDS.add((ns||[]).map(n => ({ id:n.id, label:n.label, description:n.description, x:n.x, y:n.y })));
-  edgesDS.add((es||[]).map(e => ({ id:e.id, from:e.source, to:e.target })));
-  applyLayersAndSizes();
-}
-load();
-
-sb.channel('realtime-graph')
-  .on('postgres_changes', { event:'*', schema:'public', table:'nodes', filter:`graph_id=eq.${GRAPH_ID}` }, (p) => {
-    const r = p.new ?? p.old;
-    if (p.eventType === 'INSERT' || p.eventType === 'UPDATE') {
-      nodesDS.update({ id:r.id, label:r.label, description:r.description, x:r.x, y:r.y });
+    // bump later siblings' sibling_order
+    for (let i = idx; i < ordered.length; i++) {
+      const id = ordered[i]; const so = (byId(id).sibling_order ?? i) + 1;
+      await sb.from('nodes').update({sibling_order: so}).eq('id', id);
+      byId(id).sibling_order = so;
     }
-    if (p.eventType === 'DELETE') nodesDS.remove(r.id);
-    applyLayersAndSizes();
-  })
-  .on('postgres_changes', { event:'*', schema:'public', table:'edges', filter:`graph_id=eq.${GRAPH_ID}` }, (p) => {
-    const r = p.new ?? p.old;
-    if (p.eventType === 'INSERT' || p.eventType === 'UPDATE') {
-      edgesDS.update({ id:r.id, from:r.source, to:r.target });
+    await load(); renderAll(false);
+    sel = nw.id; drawNodes();
+  });
+
+  /* ===== IO + realtime ===== */
+  function norm(n) {return {id: n.id, graph_id: n.graph_id ?? GRAPH_ID, label: n.label ?? 'Untitled', note_md: n.note_md ?? '', sibling_order: n.sibling_order ?? 0, deleted_at: n.deleted_at ?? null};}
+  async function load() {
+    const [ns, es] = await Promise.all([
+      sb.from('nodes').select('*').eq('graph_id', GRAPH_ID).is('deleted_at', null),
+      sb.from('edges').select('*').eq('graph_id', GRAPH_ID),
+    ]);
+    N.clear(); (ns.data || []).forEach(n => N.set(n.id, norm(n)));
+    E = (es.data || []).map(e => ({source: e.source, target: e.target}));
+    if (N.size === 0) {const {data: r} = await sb.from('nodes').insert({graph_id: GRAPH_ID, label: 'Root'}).select().single(); N.set(r.id, norm(r));}
+  }
+  function layout() {buildDepths(); assignAngles(); place();}
+  function renderAll(center = true) {layout(); drawBands(); drawEdges(); drawNodes(); if (center) {const w = svg.node().clientWidth; svg.call(zoom.transform, d3.zoomIdentity.translate(w / 2, 40).scale(1));} }
+
+  /* realtime: reflect toolbar edits immediately */
+  sb.channel('rt-' + GRAPH_ID)
+    .on('postgres_changes', {event: '*', schema: 'public', table: 'nodes', filter: `graph_id=eq.${GRAPH_ID}`}, async () => {await load(); renderAll(false);})
+    .on('postgres_changes', {event: '*', schema: 'public', table: 'edges', filter: `graph_id=eq.${GRAPH_ID}`}, async () => {await load(); renderAll(false);})
+    .subscribe();
+  // Close the iframe panel when clicking anywhere outside it
+  document.addEventListener("pointerdown", (e) => {
+    const panel = document.getElementById("panel");
+    if (panel.style.display === "block" && !panel.contains(e.target)) {
+      panel.style.display = "none";
     }
-    if (p.eventType === 'DELETE') edgesDS.remove(r.id);
-    applyLayersAndSizes();
-  })
-  .subscribe();
+  }, true); // capture phase so it always runs
+
+
+  /* boot */
+  (async function () {await load(); renderAll(true);})();
 </script>
-
