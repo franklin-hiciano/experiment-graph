@@ -206,6 +206,15 @@
     color: #334155;
     z-index: 9999
   }
+
+  #glist .copy,
+  #glist .edit {
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    background: #fff;
+    padding: 4px 8px;
+    cursor: pointer
+  }
 </style>
 
 <div id="wrap">
@@ -216,7 +225,10 @@
   <div id="gmenu" role="menu" aria-label="Graphs">
     <div class="gmhead">
       <span>Graphs</span>
-      <button id="newg" title="New graph">➕</button>
+      <div>
+        <button id="renCur" title="Rename current graph">📝</button>
+        <button id="newg" title="New graph">➕</button>
+      </div>
     </div>
     <div id="glist"></div>
   </div>
@@ -271,6 +283,78 @@
   const kids = id => E.filter(e => e.source === id).map(e => e.target).filter(k => N.has(k));
   const rootId = () => {const inc = new Set(E.map(e => e.target)); for (const id of N.keys()) if (!inc.has(id)) return id; return [...N.keys()][0] || null;};
   const ring = d => d * STEP;
+
+  // robust clipboard copy (works even when navigator.clipboard is blocked)
+  async function copyText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.focus(); ta.select();
+        const ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        return ok;
+      } catch {return false;}
+    }
+  }
+
+  // build subtree JSON
+  function subtreeBuild(id) {
+    const n = byId(id);
+    const kidsOrdered = kids(id)
+      .map(cid => byId(cid))
+      .sort((A, B) => (A.sibling_order ?? 0) - (B.sibling_order ?? 0) || String(A.label).localeCompare(String(B.label)))
+      .map(c => c.id);
+    return {
+      label: n.label || '',
+      note_md: n.note_md || '',
+      tag: n.tag || 0,
+      children: kidsOrdered.map(subtreeBuild)
+    };
+  }
+
+  async function copySubtreeJSON(rootId) {
+    const payload = {
+      __radial: "subtree:v1",
+      graph: GRAPH_ID,
+      rootLabel: byId(rootId)?.label || '',
+      tree: subtreeBuild(rootId)
+    };
+    const ok = await copyText(JSON.stringify(payload, null, 2));
+    if (!ok) throw new Error('Clipboard not available');
+  }
+
+
+  function subtreeBuild(id) {
+    const n = byId(id);
+    const kidsOrdered = kids(id)
+      .map(cid => byId(cid))
+      .sort((A, B) => (A.sibling_order ?? 0) - (B.sibling_order ?? 0) || String(A.label).localeCompare(String(B.label)))
+      .map(c => c.id);
+    return {
+      label: n.label || '',
+      note_md: n.note_md || '',
+      tag: n.tag || 0,
+      children: kidsOrdered.map(subtreeBuild)
+    };
+  }
+  async function copySubtreeJSON(rootId) {
+    const payload = {
+      __radial: "subtree:v1",
+      graph: GRAPH_ID,
+      rootLabel: byId(rootId)?.label || '',
+      tree: subtreeBuild(rootId)
+    };
+    await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+    msg('Subtree copied');
+  }
+
 
   async function reorderByDropPosition(parentId, movingId, dropX, dropY) {
     if (!parentId) return;
@@ -475,9 +559,19 @@
     n.exit().remove();
 
     // gray add/delete handle (one per node)
+    // track "was this a drag?" so clicks don't fire after a drag
+    const draggingHandles = new WeakSet();
+
+    // track "was this a drag?" so clicks don't fire after a drag
+
+    const DRAG_CLICK_EPS = 4; // px: below this, treat as click
+
     const handles = gNodes.selectAll("circle.node-handle").data(data, d => d.id);
+
     handles.enter().append("circle")
-      .attr("class", "node-handle").attr("r", HANDLE_R)
+      .attr("class", "node-handle")
+      .attr("r", HANDLE_R)
+      // right-click = delete subtree
       .on("contextmenu", async (ev, d) => {
         ev.preventDefault();
         if (!confirm("Delete this node and all descendants?")) return;
@@ -485,29 +579,56 @@
         await sb.from('nodes').update({deleted_at: new Date().toISOString()}).in('id', [d.id, ...desc]);
         msg("Deleted"); await load(); renderAll(false);
       })
+      // drag: click (no move) = copy; drag to empty space = add child
       .call(
         d3.drag()
-          .on("start", (ev, d) => {
+          .on("start", function (ev, d) {
             ev.sourceEvent.stopPropagation();
+            this.__start = {x: ev.x, y: ev.y};
             gOverlay.selectAll(".drag-ghost").remove();
             const p = pos[d.id] || {x: 0, y: 0};
-            gOverlay.append("path").attr("class", "drag-ghost").attr("d", `M${p.x},${p.y} L${ev.x},${ev.y}`);
+            gOverlay.append("path").attr("class", "drag-ghost")
+              .attr("d", `M${p.x},${p.y} L${ev.x},${ev.y}`);
           })
-          .on("drag", (ev, d) => {
+          .on("drag", function (ev, d) {
             const p = pos[d.id] || {x: 0, y: 0};
-            gOverlay.select("path.drag-ghost").attr("d", `M${p.x},${p.y} L${ev.x},${ev.y}`);
+            gOverlay.select("path.drag-ghost")
+              .attr("d", `M${p.x},${p.y} L${ev.x},${ev.y}`);
           })
-          .on("end", async (ev, d) => {
+          .on("end", async function (ev, d) {
+            const start = this.__start || {x: ev.x, y: ev.y};
+            const moved = Math.hypot(ev.x - start.x, ev.y - start.y) > DRAG_CLICK_EPS;
             gOverlay.selectAll(".drag-ghost").remove();
+
+            // no/low movement => treat as CLICK → copy subtree
+            if (!moved) {
+              try {await copySubtreeJSON(d.id); msg("Subtree copied");}
+              catch (e) {console.error(e); msg("Copy failed");}
+              return;
+            }
+
+            // else: add child only if dropped on empty space (not over a node)
             const dropOn = nearestNodeId(ev.x, ev.y, null);
             if (dropOn) {msg("Drop on empty space to add"); return;}
+
             const title = prompt("New child title?"); if (title == null) return;
             const order = kids(d.id).length;
-            const {data: nw} = await sb.from('nodes').insert({graph_id: GRAPH_ID, label: title, sibling_order: order, note_md: ''}).select().single();
+            const {data: nw} = await sb.from('nodes')
+              .insert({graph_id: GRAPH_ID, label: title, sibling_order: order, note_md: ''})
+              .select().single();
             await sb.from('edges').insert({graph_id: GRAPH_ID, source: d.id, target: nw.id});
             msg("Child added"); await load(); renderAll(false);
           })
       );
+
+    handles
+      .attr("cx", d => (pos[d.id]?.x ?? 0))
+      .attr("cy", d => (pos[d.id]?.y ?? 0) + HANDLE_OFFSET);
+
+    handles.exit().remove();
+
+
+
     handles
       .attr("cx", d => (pos[d.id]?.x ?? 0))
       .attr("cy", d => (pos[d.id]?.y ?? 0) + HANDLE_OFFSET);
