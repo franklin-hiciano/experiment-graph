@@ -1,9 +1,6 @@
 <!doctype html>
 <meta charset="utf-8" />
-<title>Radial</title>
-<head><link rel="icon" type="image/png" href="logo.png">
-<link rel="shortcut icon" type="image/png" href="logo.png">
-</head>
+<title>Radial Mindmap — viewer (minimal)</title>
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <style>
   html,
@@ -172,6 +169,33 @@
     height: 100%;
     border: 0
   }
+
+  .node-handle {
+    pointer-events: all;
+    fill: #9ca3af;
+    /* gray */
+    stroke: white;
+    stroke-width: 1;
+  }
+
+  .node-handle:hover {
+    fill: #6b7280;
+  }
+
+  .drag-ghost {
+    pointer-events: none;
+    fill: none;
+    stroke: rgba(139, 92, 246, .8);
+    stroke-width: 1.5;
+    stroke-dasharray: 4 3;
+  }
+
+  .drop-halo {
+    pointer-events: none;
+    fill: rgba(34, 197, 94, .15);
+    stroke: rgba(34, 197, 94, .55);
+    stroke-width: 2;
+  }
 </style>
 
 
@@ -216,6 +240,9 @@
     "#f472b6",      // pink-400
     "#94a3b8"       // slate-400
   ];
+  const HANDLE_R = 5;           // dot radius
+  const HANDLE_OFFSET = 12;     // dot offset below label
+  const DROP_RADIUS = 22;       // pixel radius to detect drop-on-node for reparent
 
 
   /* ===== layout constants ===== */
@@ -228,6 +255,9 @@
   const svg = d3.select("#svg");
   const g = svg.append("g"), gBands = g.append("g"), gEdges = g.append("g"), gNodes = g.append("g");
   let N = new Map(), E = [], depth = {}, angle = {}, pos = {}, sel = null;
+  const gOverlay = svg.append("g");   // <— new overlay layer on top
+
+
 
   /* ===== helpers ===== */
   const byId = id => N.get(id);
@@ -312,10 +342,66 @@
 
     // labels
     const n = gNodes.selectAll("text.node").data(data, d => d.id);
-    n.enter().append("text")
-      .attr("class", "node")
-      .attr("text-anchor", "middle")
-      .attr("dominant-baseline", "middle")
+    const dragNode = d3.drag()
+      .on('start', function (ev, d) {
+        ev.sourceEvent.stopPropagation();
+        gOverlay.selectAll('.drop-halo').remove();
+      })
+      .on('drag', function (ev, d) {
+        // live ghost position (optional): you can move the text visually while dragging if you like
+        // For feedback, draw a halo on nearest node if in range:
+        const nx = ev.x, ny = ev.y;
+        const target = nearestNodeId(nx, ny, d.id);
+        gOverlay.selectAll('.drop-halo').remove();
+        if (target) {
+          const p = pos[target];
+          gOverlay.append('circle').attr('class', 'drop-halo')
+            .attr('cx', p.x).attr('cy', p.y).attr('r', 14);
+        }
+      })
+      .on('end', async function (ev, d) {
+        gOverlay.selectAll('.drop-halo').remove();
+        const nx = ev.x, ny = ev.y;
+        const {parentId: oldPid} = await parentOf(d.id);
+        const dropOn = nearestNodeId(nx, ny, d.id);
+
+        if (dropOn && dropOn !== oldPid) {
+          // reparent to dropOn
+          const forbid = descendantsOf(d.id);
+          if (forbid.has(dropOn)) {msg('Cannot reparent into a descendant'); return;}
+
+          // append at end of new parent
+          const newSibs = kidsOf(dropOn);
+          await sb.from('nodes').update({sibling_order: newSibs.length}).eq('id', d.id);
+
+          // move edge
+          const hasEdge = E.some(e => e.target === d.id);
+          if (hasEdge) {
+            await sb.from('edges').update({source: dropOn}).eq('graph_id', GRAPH_ID).eq('target', d.id);
+          } else {
+            await sb.from('edges').insert({graph_id: GRAPH_ID, source: dropOn, target: d.id});
+          }
+
+          // tidy old siblings
+          if (oldPid) {
+            const remain = kidsOf(oldPid).filter(k => k !== d.id);
+            await setSiblingOrder(remain);
+          }
+          msg('Reparented');
+          await load(); renderAll(false);
+          return;
+        }
+
+        // else: reorder within current parent based on final angle
+        await reorderWithinParentByAngle(oldPid);
+        msg('Reordered');
+        await load(); renderAll(false);
+      });
+
+    /* attach the drag to your text nodes */
+    n.enter().append("text").attr("class", "node")
+      .attr("text-anchor", "middle").attr("dominant-baseline", "middle")
+      .call(dragNode).attr("dominant-baseline", "middle")
       .on("click", async (ev, d) => {                   // open toolbar
         ev.stopPropagation();
         sel = d.id; drawNodes();
@@ -348,6 +434,59 @@
       .style("font-size", d => `${Math.max(MINF, FONT - (depth[d.id] || 0) * SHRINK)}px`)
       .text(d => d.label || "•");
 
+    // handles (one per node)
+    const handles = gNodes.selectAll('circle.node-handle').data(data, d => d.id);
+
+    handles.enter().append('circle')
+      .attr('class', 'node-handle')
+      .attr('r', HANDLE_R)
+      .on('contextmenu', async (ev, d) => {
+        ev.preventDefault();
+        if (!confirm('Delete this node and all descendants?')) return;
+        // delete subtree
+        const desc = descendantsOf(d.id);
+        await sb.from('nodes').update({deleted_at: new Date().toISOString()})
+          .in('id', [d.id, ...desc]);
+        msg('Deleted');
+      })
+      .call(
+        d3.drag()
+          .on('start', function (ev, d) {
+            ev.sourceEvent.stopPropagation();
+            gOverlay.selectAll('.drag-ghost').remove();
+            gOverlay.append('path').attr('class', 'drag-ghost').attr('d', `M${pos[d.id].x},${pos[d.id].y} L${ev.x},${ev.y}`);
+          })
+          .on('drag', function (ev, d) {
+            gOverlay.select('path.drag-ghost')
+              .attr('d', `M${pos[d.id].x},${pos[d.id].y} L${ev.x},${ev.y}`);
+          })
+          .on('end', async function (ev, d) {
+            gOverlay.selectAll('.drag-ghost').remove();
+            // only create child if dropped in empty space (not on an existing node)
+            const dropOn = nearestNodeId(ev.x, ev.y, null);
+            if (dropOn) {msg('Drop on empty space to add'); return;}
+
+            // create child for d
+            const title = prompt('New child title?'); if (title == null) return;
+            const order = kidsOf(d.id).length;
+            const {data: nw} = await sb.from('nodes')
+              .insert({graph_id: GRAPH_ID, label: title, sibling_order: order, note_md: ''})
+              .select().single();
+            await sb.from('edges').insert({graph_id: GRAPH_ID, source: d.id, target: nw.id});
+            msg('Child added');
+            await load(); renderAll(false);
+          })
+      );
+
+    handles
+      .attr('cx', d => (pos[d.id]?.x || 0))
+      .attr('cy', d => (pos[d.id]?.y || 0) + HANDLE_OFFSET);
+
+    handles.exit().remove();
+
+
+
+
     n.exit().remove();
   }
 
@@ -361,6 +500,60 @@
       panel.style.display = 'none';
     }
   });
+
+  function clampAngle(a) {                // we’re using bottom semicircle [0..π] with your ROT already applied elsewhere
+    while (a < ANG0) a += 2 * Math.PI;
+    while (a > ANG1) a -= 2 * Math.PI;
+    return Math.max(ANG0, Math.min(ANG1, a));
+  }
+  function angleOfXY(x, y) {               // undo ROT if you use it in placement
+    let a = Math.atan2(y, x);
+    if (typeof ROT === 'number') a -= ROT;
+    return clampAngle(a);
+  }
+  function kidsOf(pid) {
+    return E.filter(e => e.source === pid).map(e => e.target);
+  }
+  async function parentOf(id) {
+    const {data: edges = []} = await sb.from('edges').select('*').eq('graph_id', GRAPH_ID);
+    const p = edges.find(e => e.target === id)?.source || null;
+    return {parentId: p, edges};
+  }
+  function descendantsOf(startId) {
+    const ch = new Map();
+    E.forEach(e => {if (!ch.has(e.source)) ch.set(e.source, []); ch.get(e.source).push(e.target);});
+    const out = new Set(), q = [startId];
+    while (q.length) {
+      const u = q.shift();
+      for (const v of (ch.get(u) || [])) {if (!out.has(v)) {out.add(v); q.push(v);} }
+    }
+    return out;
+  }
+  function nearestNodeId(x, y, ignoreId) {
+    let best = null, bestD = Infinity;
+    for (const d of N.values()) {
+      if (d.id === ignoreId) continue;
+      const p = pos[d.id]; if (!p) continue;
+      const dx = p.x - x, dy = p.y - y;
+      const dd = Math.hypot(dx, dy);
+      if (dd < bestD) {best = d.id; bestD = dd;}
+    }
+    return (bestD <= DROP_RADIUS) ? best : null;
+  }
+  async function setSiblingOrder(ids) {
+    for (let i = 0; i < ids.length; i++) {
+      await sb.from('nodes').update({sibling_order: i}).eq('id', ids[i]);
+    }
+  }
+  async function reorderWithinParentByAngle(pid) {
+    const kids = kidsOf(pid);
+    if (kids.length <= 1) return;
+    const withA = kids.map(id => ({id, a: angleOfXY(pos[id].x, pos[id].y)}))
+      .sort((u, v) => u.a - v.a)
+      .map(o => o.id);
+    await setSiblingOrder(withA);
+  }
+
 
   /* ===== double-click background: create node on ring edge at angle ===== */
   svg.on("dblclick", async (ev) => {
@@ -462,7 +655,7 @@
 
 
   /* boot */
-  (async function () {await load(); renderAll(true);})();
+  (async function () {await load(); renderAll(true); drawNodes();})();
 </script>
 
 <script>
