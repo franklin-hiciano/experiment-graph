@@ -81,7 +81,33 @@
     max-width: 100%;
     height: auto
   }
+
+  #site-logo {
+    position: absolute;
+    /* pins it in place */
+    bottom: 40px;
+    right: 0px;
+    z-index: 1000;
+    /* make sure it sits above other UI */
+  }
+
+  #site-logo img {
+    width: 48px;
+    /* adjust size */
+    height: 48px;
+    object-fit: contain;
+    /* prevents distortion */
+  }
 </style>
+
+<div id="site-logo">
+  <img src="logo.png" alt="Logo">
+</div>
+
+<link rel="icon" type="image/png" href="logo.png">
+<link rel="shortcut icon" type="image/png" href="logo.png">
+
+
 
 <div id="wrap">
   <textarea id="editor" placeholder="Markdown…"></textarea>
@@ -94,9 +120,10 @@
 
     <input id="name" placeholder="Node name" />
     <button id="add" title="Add child">➕</button>
-    <button id="insHL" title="Insert HL token">🔁</button>
+    <button id="hlNew" title="Insert highlight block">📌</button>
+
     <button id="copy" title="Copy embed link">🔗</button>
-    <button id="compact" title="Compact data-URI images in editor">🗜️</button>
+    <button id="compact" title="Compact data-URI images in editor">🖼️</button>
 
 
 
@@ -139,6 +166,27 @@
   const btnDel = document.getElementById('del');
   const btnCompact = document.getElementById('compact');
 
+
+
+  // Allow data:image/* in <img src> after sanitize
+  DOMPurify.addHook('uponSanitizeAttribute', (node, data) => {
+    if (
+      node && node.nodeName === 'IMG' &&
+      data && data.attrName === 'src' &&
+      typeof data.attrValue === 'string' &&
+      data.attrValue.startsWith('data:image/')
+    ) {
+      data.keepAttr = true; // keep src=data:image/...
+    }
+  });
+
+  // Optional but helpful: also relax the URI regex
+  const PURIFY_CFG = {
+    ALLOWED_URI_REGEXP: /^(?:https?|mailto|tel|data:image\/[a-zA-Z0-9.+-]+;base64,)/i
+  };
+
+
+
   /* ---- state ---- */
   const qs = new URLSearchParams(location.search);
   const nodeId = qs.get('id');
@@ -176,32 +224,45 @@
 
   /* ---- marked: default rendering (data-URIs show inline) ---- */
   async function expandHighlightRefs(markdown) {
-    // Collect the keys present as <<HL:123>>
-    const keys = [];
-    markdown.replace(HL_REF_RE, (_, k) => {keys.push(parseInt(k, 10)); return '';});
-    if (!keys.length) return markdown;
+    // Expand editor-compact tokens before doing anything
+    const mdIn = compact ? expandText(markdown) : markdown;
 
-    // Load edges + highlights for these keys
-    const [{data: edges = []}, {data: hs = []}] = await Promise.all([
+    // Collect all <<HL:n>> keys present
+    const need = new Set();
+    mdIn.replace(HL_REF_RE, (_, k) => {
+      const n = parseInt(k, 10);
+      if (Number.isFinite(n)) need.add(n);
+      return '';
+    });
+    if (need.size === 0 || !node || !node.id) return mdIn;
+
+    // Fetch edges + highlights for those keys
+    const [edgesRes, hsRes] = await Promise.all([
       sb.from('edges').select('source,target').eq('graph_id', graphId),
-      sb.from('highlights').select('node_id,key_int,max_up,content').eq('graph_id', graphId).in('key_int', keys)
+      sb.from('highlights')
+        .select('node_id,key_int,max_up,content')
+        .eq('graph_id', graphId)
+        .in('key_int', Array.from(need))
     ]);
+    const edges = edgesRes.data || [];
+    const hs = hsRes.data || [];
 
-    // Build adjacency for downward BFS from current node
+    // Build downward adjacency (source -> [targets])
     const down = new Map();
-    edges.forEach(e => {(down.get(e.source) || down.set(e.source, [])).get(e.source);});
-    // Fix: the above line just ensures map key; now push properly
-    edges.forEach(e => {
+    for (const e of edges) {
       if (!down.has(e.source)) down.set(e.source, []);
       down.get(e.source).push(e.target);
-    });
+    }
 
-    // Distance from this node to descendants
-    const dist = new Map([[node.id, 0]]);
-    const q = [node.id];
+    // BFS from current node to compute distances to descendants
+    const dist = new Map();
+    const q = [];
+    dist.set(node.id, 0);
+    q.push(node.id);
     while (q.length) {
       const u = q.shift();
-      for (const v of (down.get(u) || [])) {
+      const arr = down.get(u) || [];
+      for (const v of arr) {
         if (!dist.has(v)) {
           dist.set(v, dist.get(u) + 1);
           q.push(v);
@@ -209,43 +270,81 @@
       }
     }
 
-    // Pick nearest valid highlight per key (respecting max_up)
-    const best = new Map(); // key -> content
-    hs.forEach(h => {
+    // Choose the nearest valid highlight per key (respect max_up)
+    const best = new Map(); // key_int -> {content, dist}
+    for (const h of hs) {
       const d = dist.get(h.node_id);
-      if (d == null) return;
-      if (d <= (h.max_up || 1)) {
+      if (d == null) continue;
+      const maxUp = h.max_up || 1;
+      if (d <= maxUp) {
         const cur = best.get(h.key_int);
         if (!cur || d < cur.dist) best.set(h.key_int, {content: h.content, dist: d});
       }
-    });
+    }
 
-    // Replace tokens
-    return markdown.replace(HL_REF_RE, (m, k) => {
-      const b = best.get(parseInt(k, 10));
-      return b ? b.content : m; // leave token if nothing valid
+    // Substitute tokens
+    return mdIn.replace(HL_REF_RE, (m, k) => {
+      const kk = parseInt(k, 10);
+      const b = best.get(kk);
+      return b ? b.content : m;  // leave token if nothing valid
     });
   }
 
   async function renderPreview() {
-    // Expand compact IMG tokens and HL refs before parsing
+    // If you have a PURIFY_CFG (to allow data:image/*), pass it here
     const md0 = compact ? expandText(ed.value) : ed.value;
     const md1 = await expandHighlightRefs(md0);
-    pv.innerHTML = DOMPurify.sanitize(marked.parse(md1 || ''));
+    const md2 = stripHLBlocks(md1);
+    pv.innerHTML = DOMPurify.sanitize(marked.parse(md2 || ''), (typeof PURIFY_CFG !== 'undefined' ? PURIFY_CFG : undefined));
   }
 
+
+  // Get next available highlight key (graph-wide)
+  // Avoids collisions by taking max(key_int)+1 across this graph.
+  async function nextHLKey() {
+    const {data: rows = []} = await sb
+      .from('highlights')
+      .select('key_int')
+      .eq('graph_id', graphId)
+      .order('key_int', {ascending: false})
+      .limit(1);
+    const maxK = rows.length ? (rows[0].key_int || 0) : 0;
+    return maxK + 1;
+  }
+
+  // Insert text at the current selection/caret
+  function insertAtSelection(textarea, snippet) {
+    const s = textarea.selectionStart, e = textarea.selectionEnd, v = textarea.value;
+    textarea.value = v.slice(0, s) + snippet + v.slice(e);
+    const p = s + snippet.length;
+    textarea.selectionStart = textarea.selectionEnd = p;
+    textarea.focus();
+  }
+
+
   // Add to HTML bar: <button id="insHL" title="Insert HL token">🔁</button>
-  const btnInsHL = document.getElementById('insHL');
-  btnInsHL.onclick = () => {
-    const k = prompt('Highlight number to reference? (e.g., 123)');
-    if (!k) return;
-    const t = `<<HL:${parseInt(k, 10)}>>`;
-    const s = ed.selectionStart, e = ed.selectionEnd, v = ed.value;
-    ed.value = v.slice(0, s) + t + v.slice(e);
-    ed.selectionStart = ed.selectionEnd = s + t.length;
-    ed.focus();
-    queueSave('doc');
+  // 📌 Insert new HL block with auto-assigned number (default up=99)
+  const btnHL = document.getElementById('hlNew');
+  btnHL.onclick = async () => {
+    try {
+      const k = await nextHLKey();
+      const s = ed.selectionStart, e = ed.selectionEnd;
+      const sel = ed.value.slice(s, e);
+      const body = sel && sel.trim().length ? sel : 'SOME MARKDOWN WOO 🐸🐸';
+      const block = `\n{{HL:${k}|up=99}}\n${body}\n{{/HL}}\n`;
+
+      insertAtSelection(ed, block);
+      msg(`HL #${k} inserted`);
+
+      // Save & re-render
+      queueSave('doc');                     // your save collapses/expands as needed
+      if (mode === 'prev') await renderPreview();
+    } catch (err) {
+      console.error(err);
+      msg('Could not create highlight');
+    }
   };
+
 
 
 
@@ -260,6 +359,13 @@
   */
   const HL_BLOCK_RE = /\{\{HL:(\d+)(?:\|up=(\d+))?\}\}([\s\S]*?)\{\{\/HL\}\}/g;
   const HL_REF_RE = /<<HL:(\d+)>>/g;
+
+
+  // Strip HL blocks (leave nothing in preview)
+  // Strip HL markers, but keep inner markdown content
+  function stripHLBlocks(md) {
+    return md.replace(HL_BLOCK_RE, (m, key, up, content) => content.trim());
+  }
 
   function extractHighlights(md) {
     const out = [];
@@ -303,6 +409,8 @@
     }, 200);
   }
 
+
+
   function paintDot() {
     const c = TAGS[(node?.tag || 0) % TAGS.length];
     const dot = document.getElementById('tagdot');
@@ -322,6 +430,7 @@
     tokenFor.clear(); dataFor.clear(); imgSeq = 1;
     indexImages(ed.value);
     msg('Ready');
+    if (mode === 'prev') renderPreview().catch(() => { });
   }
 
   /* ---- editor + name autosave ---- */
@@ -530,5 +639,5 @@
   window.addEventListener('keydown', (e) => {if (e.key === 'Escape') {parent.postMessage('close-toolbar', '*');} });
 
   /* ---- boot ---- */
-  setMode('edit'); load();
+  setMode('prev'); load();
 </script>
