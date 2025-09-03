@@ -1,0 +1,303 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Toolbar — minimal markdown (data-URI + edit compact)</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  html,
+  body {
+    height: 100%;
+    margin: 0;
+    font: 14px system-ui, -apple-system, Segoe UI, Roboto;
+    background: #fff
+  }
+
+  #wrap {
+    height: 100%;
+    display: flex;
+    flex-direction: column
+  }
+
+  #editor {
+    flex: 1;
+    display: block;
+    width: 100%;
+    height: 100%;
+    resize: none;
+    border: 0;
+    outline: 0;
+    padding: 12px;
+    font: 13px ui-monospace, Menlo, Consolas
+  }
+
+  #preview {
+    flex: 1;
+    display: none;
+    padding: 12px;
+    overflow: auto
+  }
+
+  #bar {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    padding: 8px;
+    border-top: 1px solid #eef2f7;
+    background: #fafafa
+  }
+
+  #name {
+    flex: 1;
+    min-width: 120px;
+    padding: 6px 8px;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px
+  }
+
+  button {
+    padding: 6px 8px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    background: #fff;
+    cursor: pointer
+  }
+
+  button.active {
+    background: #eef2ff;
+    border-color: #c7d2fe
+  }
+
+  .danger {
+    border-color: #fecaca;
+    background: #fff5f5
+  }
+
+  .muted {
+    font-size: 12px;
+    color: #6b7280;
+    margin-left: auto
+  }
+
+  img {
+    max-width: 100%;
+    height: auto
+  }
+</style>
+
+<div id="wrap">
+  <textarea id="editor" placeholder="Markdown…"></textarea>
+  <div id="preview"></div>
+
+  <div id="bar">
+    <input id="name" placeholder="Node name" />
+    <button id="left" title="Move left">⬅️</button>
+    <button id="right" title="Move right">➡️</button>
+    <button id="add" title="Add child">➕</button>
+    <button id="compact" title="Compact data-URI images in editor">🗜️</button>
+    <button id="mode" title="Preview">👁️</button>
+    <button id="copy" title="Copy embed link">🔗</button>
+    <button id="del" class="danger" title="Delete subtree">🗑️</button>
+    <span id="st" class="muted">Ready</span>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
+<script>
+  /* ---- config ---- */
+  const SUPABASE_URL = "https://gjdyushogvhuootdiwxz.supabase.co";
+  const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdqZHl1c2hvZ3ZodW9vdGRpd3h6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTY4NTE3NTMsImV4cCI6MjA3MjQyNzc1M30.52heLq-Ic5DIXCZV0tCiv_VhubkY2-v3arq7InoI-sE";
+  const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+  /* ---- dom ---- */
+  const ed = document.getElementById('editor');
+  const pv = document.getElementById('preview');
+  const nameEl = document.getElementById('name');
+  const st = document.getElementById('st');
+  const btnLeft = document.getElementById('left');
+  const btnRight = document.getElementById('right');
+  const btnAdd = document.getElementById('add');
+  const btnMode = document.getElementById('mode');
+  const btnCopy = document.getElementById('copy');
+  const btnDel = document.getElementById('del');
+  const btnCompact = document.getElementById('compact');
+
+  /* ---- state ---- */
+  const qs = new URLSearchParams(location.search);
+  const nodeId = qs.get('id');
+  let node = null, graphId = null, saveTimer = null, mode = 'edit';
+  let compact = false;
+
+  /* Data-URI compaction map:
+     we replace (in editor view only) data-URI with {{IMG:token}}; on save/preview we expand back. */
+  let imgSeq = 1;
+  const tokenFor = new Map(); // dataUri -> token
+  const dataFor = new Map(); // token   -> dataUri
+
+  const dataUriRe = /!\[[^\]]*\]\(\s*(data:image\/[a-zA-Z0-9.+-]+;base64,[^)]+?)\s*\)/g;
+  const tokenRe = /\{\{IMG:([a-zA-Z0-9_-]+)\}\}/g;
+
+  function indexImages(markdown) {
+    (markdown.match(dataUriRe) || []).forEach(m => {
+      const uri = m.replace(dataUriRe, '$1');
+      if (!tokenFor.has(uri)) {
+        const tok = 'img' + (imgSeq++);
+        tokenFor.set(uri, tok);
+        dataFor.set(tok, uri);
+      }
+    });
+  }
+  function collapseText(markdown) {
+    return markdown.replace(dataUriRe, (full, uri) => {
+      const tok = tokenFor.get(uri) || (() => {const t = 'img' + (imgSeq++); tokenFor.set(uri, t); dataFor.set(t, uri); return t;})();
+      return full.replace(uri, `{{IMG:${tok}}}`);
+    });
+  }
+  function expandText(markdown) {
+    return markdown.replace(tokenRe, (full, tok) => dataFor.get(tok) || full);
+  }
+
+  /* ---- marked: default rendering (data-URIs show inline) ---- */
+  function renderPreview() {
+    const expanded = compact ? expandText(ed.value) : ed.value;
+    pv.innerHTML = DOMPurify.sanitize(marked.parse(expanded || ''));
+  }
+
+  /* ---- helpers ---- */
+  function msg(t) {st.textContent = t; if (t !== 'Saving…') setTimeout(() => {if (st.textContent === t) st.textContent = 'Ready';}, 1000);}
+  function setMode(m) {
+    mode = m;
+    if (m === 'edit') {ed.style.display = 'block'; pv.style.display = 'none'; btnMode.textContent = '👁️'; btnMode.title = 'Preview';}
+    else {renderPreview(); ed.style.display = 'none'; pv.style.display = 'block'; btnMode.textContent = '✏️'; btnMode.title = 'Edit';}
+  }
+  function kidsOf(id, edges) {return edges.filter(e => e.source === id).map(e => e.target);}
+  function queueSave(kind) {
+    st.textContent = 'Saving…';
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(async () => {
+      const update = {};
+      if (kind === 'doc') {
+        update.note_md = compact ? expandText(ed.value) : ed.value; // never save compacted tokens
+      }
+      if (kind === 'name') {update.label = nameEl.value;}
+      await sb.from('nodes').update(update).eq('id', node.id);
+      msg('Saved');
+      if (mode === 'prev') renderPreview();
+    }, 200);
+  }
+
+  /* ---- load node ---- */
+  async function load() {
+    const {data: n, error} = await sb.from('nodes').select('*').eq('id', nodeId).single();
+    if (error) {st.textContent = 'Load error'; return;}
+    node = n; graphId = n.graph_id;
+    nameEl.value = n.label || '';
+    ed.value = n.note_md || '';
+    tokenFor.clear(); dataFor.clear(); imgSeq = 1;
+    indexImages(ed.value);
+    msg('Ready');
+  }
+
+  /* ---- editor + name autosave ---- */
+  ed.addEventListener('input', () => {indexImages(ed.value); queueSave('doc');});
+  nameEl.addEventListener('input', () => queueSave('name'));
+
+  /* ---- paste: convert clipboard images to data-URI ---- */
+  window.addEventListener('paste', (e) => {
+    const items = e.clipboardData?.items || [];
+    for (const it of items) {
+      if (it.type && it.type.startsWith('image/')) {
+        e.preventDefault();
+        const file = it.getAsFile(); if (!file) return;
+        const r = new FileReader();
+        r.onload = () => {
+          const dataUrl = String(r.result || "");
+          // insert full data-URI markdown at caret
+          const start = ed.selectionStart, end = ed.selectionEnd, v = ed.value;
+          const snippet = `\n![pasted](${dataUrl})\n`;
+          ed.value = v.slice(0, start) + snippet + v.slice(end);
+          // index & optionally compact that insertion
+          indexImages(ed.value);
+          if (compact) {ed.value = collapseText(ed.value);}
+          queueSave('doc');
+          if (mode === 'prev') renderPreview();
+        };
+        r.readAsDataURL(file);
+        return;
+      }
+    }
+    // allow normal text paste otherwise
+  });
+
+  /* ---- compact toggle (editor-only) ---- */
+  btnCompact.onclick = () => {
+    compact = !compact;
+    btnCompact.classList.toggle('active', compact);
+    if (compact) {
+      indexImages(ed.value);
+      ed.value = collapseText(ed.value);
+    } else {
+      ed.value = expandText(ed.value);
+    }
+    // do not save just for toggling visual mode
+    if (mode === 'prev') renderPreview();
+  };
+
+  /* ---- reorder (visual LEFT = later; RIGHT = earlier) ---- */
+  async function siblings() {
+    const {data: edges = []} = await sb.from('edges').select('*').eq('graph_id', graphId);
+    const p = edges.find(x => x.target === node.id)?.source || null;
+    const ks = p ? kidsOf(p, edges) : [node.id];
+    const {data: nodes = []} = await sb.from('nodes').select('id,sibling_order').in('id', ks).order('sibling_order', {ascending: true});
+    return {parent: p, order: nodes.map(r => r.id)};
+  }
+  btnLeft.onclick = async () => {
+    const {order} = await siblings();
+    const i = order.indexOf(node.id);
+    if (i < 0 || i === order.length - 1) return;
+    [order[i], order[i + 1]] = [order[i + 1], order[i]];
+    for (let j = 0; j < order.length; j++) await sb.from('nodes').update({sibling_order: j}).eq('id', order[j]);
+    msg('Moved left');
+  };
+  btnRight.onclick = async () => {
+    const {order} = await siblings();
+    const i = order.indexOf(node.id);
+    if (i <= 0) return;
+    [order[i], order[i - 1]] = [order[i - 1], order[i]];
+    for (let j = 0; j < order.length; j++) await sb.from('nodes').update({sibling_order: j}).eq('id', order[j]);
+    msg('Moved right');
+  };
+
+  /* ---- add child ---- */
+  btnAdd.onclick = async () => {
+    const title = prompt('Child title?'); if (title == null) return;
+    const {data: edges = []} = await sb.from('edges').select('*').eq('graph_id', graphId);
+    const order = kidsOf(node.id, edges);
+    const {data: newN} = await sb.from('nodes')
+      .insert({graph_id: graphId, label: title, sibling_order: order.length, note_md: ''})
+      .select().single();
+    await sb.from('edges').insert({graph_id: graphId, source: node.id, target: newN.id});
+    msg('Child added');
+  };
+
+  /* ---- delete subtree (soft) ---- */
+  btnDel.onclick = async () => {
+    if (!confirm('Delete this node and all descendants?')) return;
+    const {data: edges = []} = await sb.from('edges').select('*').eq('graph_id', graphId);
+    const toDel = new Set([node.id]); const st = [node.id];
+    while (st.length) {const u = st.pop(); edges.filter(x => x.source === u).forEach(x => {if (!toDel.has(x.target)) {toDel.add(x.target); st.push(x.target);} });}
+    await sb.from('nodes').update({deleted_at: new Date().toISOString()}).in('id', [...toDel]);
+    msg('Deleted');
+  };
+
+  /* ---- preview toggle; copy embed; Esc closes in parent ---- */
+  btnMode.onclick = () => setMode(mode === 'edit' ? 'prev' : 'edit');
+  btnCopy.onclick = async () => {
+    const url = new URL(location.href); url.search = ''; url.searchParams.set('id', nodeId);
+    await navigator.clipboard.writeText(url.toString()); msg('Link copied');
+  };
+  window.addEventListener('keydown', (e) => {if (e.key === 'Escape') {parent.postMessage('close-toolbar', '*');} });
+
+  /* ---- boot ---- */
+  setMode('edit'); load();
+</script>
