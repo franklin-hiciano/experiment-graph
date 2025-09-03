@@ -1,243 +1,281 @@
 <!doctype html>
 <meta charset="utf-8" />
-<title>Toolbar — minimal markdown (data-URI + edit compact)</title>
+<title>Radial — editor</title>
 <meta name="viewport" content="width=device-width,initial-scale=1" />
+<img id="corner-logo" src="logo.png" alt="logo" />
+
 <style>
+  :root {
+    color-scheme: light dark;
+  }
+
   html,
   body {
     height: 100%;
     margin: 0;
     font: 14px system-ui, -apple-system, Segoe UI, Roboto;
-    background: #fff
   }
 
   #wrap {
     height: 100%;
     display: flex;
-    flex-direction: column
+    flex-direction: column;
+    background: #fff;
   }
 
-  #editor {
-    flex: 1;
-    display: block;
+  #ed {
+    background-color: white;
+    color: black;
+    flex: 1 1 auto;
     width: 100%;
-    height: 100%;
-    resize: none;
     border: 0;
-    outline: 0;
+    outline: none;
     padding: 12px;
-    font: 13px ui-monospace, Menlo, Consolas
+    line-height: 1.5;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   }
 
-  #preview {
-    flex: 1;
-    display: none;
+  #corner-logo {
+    position: fixed;
+    bottom: 50px;
+    /* distance from bottom */
+    right: 0px;
+    /* distance from right */
+    width: 24px;
+    height: 24px;
+    z-index: 9999;
+    /* make sure it's above other UI */
+    cursor: pointer;
+    /* optional: so it looks clickable */
+  }
+
+
+  #pv {
+    color: black;
+    flex: 1 1 auto;
+    width: 100%;
+    overflow: auto;
     padding: 12px;
-    overflow: auto
+    display: none;
+  }
+
+  #pv img {
+    max-width: 100%;
+    height: auto;
   }
 
   #bar {
+    flex: 0 0 auto;
     display: flex;
-    gap: 8px;
     align-items: center;
-    padding: 8px;
-    border-top: 1px solid #eef2f7;
-    background: #fafafa
+    gap: 8px;
+    border-top: 1px solid #e5e7eb;
+    padding: 8px 10px;
+    background: #fff;
+    position: sticky;
+    bottom: 0;
+  }
+
+  #tagdot {
+    width: 14px;
+    height: 14px;
+    border-radius: 9999px;
+    border: 1px solid #e5e7eb;
+    display: inline-block;
+    flex: 0 0 auto;
   }
 
   #name {
-    flex: 1;
-    min-width: 120px;
-    padding: 4px 6px;
+    flex: 1 1 auto;
     border: 1px solid #e5e7eb;
-    border-radius: 8px
-  }
-
-  button {
-    padding: 4px 6px;
-    border: 1px solid #d1d5db;
     border-radius: 8px;
-    background: #fff;
-    cursor: pointer
+    padding: 6px 8px;
+    font-weight: 600;
+    min-width: 120px;
   }
 
-  button.active {
-    background: #eef2ff;
-    border-color: #c7d2fe
-  }
-
-  .danger {
-    border-color: #fecaca;
-    background: #fff5f5
-  }
-
-  .muted {
+  #st {
+    margin-left: auto;
+    color: #64748b;
     font-size: 12px;
-    color: #6b7280;
-    margin-left: auto
   }
 
-  img {
-    max-width: 100%;
-    height: auto
-  }
-
-  #site-logo {
-    position: absolute;
-    /* pins it in place */
-    bottom: 40px;
-    right: 0px;
-    z-index: 1000;
-    /* make sure it sits above other UI */
-  }
-
-  #site-logo img {
-    width: 24px;
-    /* adjust size */
-    height: 24px;
-    object-fit: contain;
-    /* prevents distortion */
+  .btn {
+    border: 1px solid #e5e7eb;
+    background: #fff;
+    border-radius: 8px;
+    padding: 6px 8px;
+    cursor: pointer;
   }
 </style>
 
-<div id="site-logo">
-  <img src="logo.png" alt="Logo">
-</div>
-
-<link rel="icon" type="image/png" href="logo.png">
-<link rel="shortcut icon" type="image/png" href="logo.png">
-
-
-
 <div id="wrap">
-  <textarea id="editor" placeholder="Markdown…"></textarea>
-  <div id="preview"></div>
+  <textarea id="ed" spellcheck="false" placeholder="Write markdown…"></textarea>
+  <div id="pv"></div>
 
   <div id="bar">
-    <span id="tagdot" title="Right-click to cycle tag"
-      style="width:14px;height:14px;border-radius:9999px;border:1px solid #e5e7eb;display:inline-block"></span>
-
-
+    <span id="tagdot" title="Right-click to cycle tag"></span>
     <input id="name" placeholder="Node name" />
-    <button id="add" title="Add child">➕</button>
-    <button id="hlNew" title="Insert highlight block">📌</button>
+    <button id="hlNew" class="btn" title="Insert highlight block">📌</button>
+    <button id="imgToggle" class="btn" title="Collapse images in editor">🗜️</button>
 
-    <button id="copy" title="Copy embed link">🔗</button>
-    <button id="compact" title="Compact data-URI images in editor">🖼️</button>
+    <button id="mode" class="btn" title="Preview/Edit toggle">👁️</button>
+    <button id="copyLink" class="btn" title="Copy link / Shift: iframe / Alt/Ctrl: editor">🔗</button>
 
-
-
-    <button id="mode" title="Preview">👁️</button>
-    <button id="left" title="Move left">⬅️</button>
-    <button id="right" title="Move right">➡️</button>
-
-
-    <button id="reparent" title="Change parent by name">🔀</button>
-
-    <button id="del" class="danger" title="Delete subtree">🗑️</button>
-    <span id="st" class="muted">Ready</span>
+    <button id="pasteTree" class="btn" title="Paste subtree as child">📥</button>
+    <span id="st">Ready</span>
   </div>
 </div>
 
+<!-- libs -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+
 <script>
-  /* ---- config ---- */
+  /* =================== CONFIG =================== */
   const SUPABASE_URL = "https://gjdyushogvhuootdiwxz.supabase.co";
   const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdqZHl1c2hvZ3ZodW9vdGRpd3h6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTY4NTE3NTMsImV4cCI6MjA3MjQyNzc1M30.52heLq-Ic5DIXCZV0tCiv_VhubkY2-v3arq7InoI-sE";
   const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-  const TAGS = [
-    null, "#8b5cf6", "#f59e0b", "#10b981", "#06b6d4",
-    "#ef4444", "#f472b6", "#94a3b8"
-  ];
-
-
-  /* ---- dom ---- */
-  const ed = document.getElementById('editor');
-  const pv = document.getElementById('preview');
-  const nameEl = document.getElementById('name');
+  /* =================== DOM HOOKS =================== */
+  const ed = document.getElementById('ed');
+  const pv = document.getElementById('pv');
+  const bar = document.getElementById('bar');
   const st = document.getElementById('st');
-  const btnLeft = document.getElementById('left');
-  const btnRight = document.getElementById('right');
-  const btnAdd = document.getElementById('add');
+  const nameEl = document.getElementById('name');
   const btnMode = document.getElementById('mode');
-  const btnCopy = document.getElementById('copy');
-  const btnDel = document.getElementById('del');
-  const btnCompact = document.getElementById('compact');
+  const btnPasteTree = document.getElementById('pasteTree');
+  const tagDot = document.getElementById('tagdot');
 
+  /* =================== STATE =================== */
+  let node = null;
+  let graphId = null;
+  let mode = 'prev';              // default to Preview
+  let saveTimer = null;
 
+  /* =================== HL REGEX (declare early) =================== */
+  const HL_BLOCK_RE = /\{\{HL:(\d+)(?:\|up=(\d+))?\}\}([\s\S]*?)\{\{\/HL\}\}/g;
+  const HL_REF_RE = /<<HL:(\d+)>>/g;
 
-  // Allow data:image/* in <img src> after sanitize
+  /* =================== SANITIZE: allow data:image/* =================== */
   DOMPurify.addHook('uponSanitizeAttribute', (node, data) => {
     if (
       node && node.nodeName === 'IMG' &&
       data && data.attrName === 'src' &&
       typeof data.attrValue === 'string' &&
       data.attrValue.startsWith('data:image/')
-    ) {
-      data.keepAttr = true; // keep src=data:image/...
-    }
+    ) {data.keepAttr = true;}
   });
-
-  // Optional but helpful: also relax the URI regex
   const PURIFY_CFG = {
     ALLOWED_URI_REGEXP: /^(?:https?|mailto|tel|data:image\/[a-zA-Z0-9.+-]+;base64,)/i
   };
 
+  /* =================== TAG COLORS =================== */
+  const TAGS = [null, "#8b5cf6", "#f59e0b", "#10b981", "#06b6d4", "#ef4444", "#f472b6", "#94a3b8"];
 
+  /* =================== UTIL =================== */
+  function msg(t) {st.textContent = t;}
+  function qs(k) {return new URLSearchParams(location.search).get(k);}
 
-  /* ---- state ---- */
-  const qs = new URLSearchParams(location.search);
-  const nodeId = qs.get('id');
-  let node = null, graphId = null, saveTimer = null, mode = 'edit';
-  let compact = false;
+  function paintDot() {
+    const c = TAGS[(node?.tag || 0) % TAGS.length];
+    tagDot.style.background = c ? c : "transparent";
+    tagDot.style.borderColor = c ? c : "#e5e7eb";
+  }
 
-  /* Data-URI compaction map:
-     we replace (in editor view only) data-URI with {{IMG:token}}; on save/preview we expand back. */
-  let imgSeq = 1;
-  const tokenFor = new Map(); // dataUri -> token
-  const dataFor = new Map(); // token   -> dataUri
+  /* Right-click bottom bar to cycle tag */
+  bar.addEventListener('contextmenu', async (e) => {
+    e.preventDefault();
+    if (!node) return;
+    const next = ((node?.tag || 0) + 1) % TAGS.length;
+    node.tag = next; paintDot();
+    msg('Saving…');
+    await sb.from('nodes').update({tag: next}).eq('id', node.id);
+    msg('Saved');
+  });
 
-  const dataUriRe = /!\[[^\]]*\]\(\s*(data:image\/[a-zA-Z0-9.+-]+;base64,[^)]+?)\s*\)/g;
-  const tokenRe = /\{\{IMG:([a-zA-Z0-9_-]+)\}\}/g;
+  /* =================== LOAD =================== */
+  async function load() {
+    const id = qs('id');
+    if (!id) {msg('No node id'); return;}
+    const {data: n, error} = await sb.from('nodes').select('*').eq('id', id).single();
+    if (error || !n) {msg('Node not found'); return;}
+    node = n; graphId = n.graph_id;
+    nameEl.value = n.label || '';
+    ed.value = n.note_md || '';
+    paintDot();
+    msg('Ready');
+    if (mode === 'prev') await renderPreview();
+  }
 
-  function indexImages(markdown) {
-    (markdown.match(dataUriRe) || []).forEach(m => {
-      const uri = m.replace(dataUriRe, '$1');
-      if (!tokenFor.has(uri)) {
-        const tok = 'img' + (imgSeq++);
-        tokenFor.set(uri, tok);
-        dataFor.set(tok, uri);
+  /* =================== SAVE (debounced) =================== */
+  function queueSave(kind) {
+    clearTimeout(saveTimer);
+    st.textContent = 'Saving…';
+    saveTimer = setTimeout(async () => {
+      if (!node) return;
+      const update = {};
+      if (kind === 'name') {update.label = nameEl.value; node.label = update.label;}
+      if (kind === 'doc') {
+        const raw = ed.value;
+        const expanded = expandText(raw);       // expands {{IMG:…}} → real data:image/…
+        await syncHighlights(expanded);         // upsert child’s highlight rows
+        update.note_md = expanded;              // store expanded in DB
+        node.note_md = expanded;
       }
-    });
-  }
-  function collapseText(markdown) {
-    return markdown.replace(dataUriRe, (full, uri) => {
-      const tok = tokenFor.get(uri) || (() => {const t = 'img' + (imgSeq++); tokenFor.set(uri, t); dataFor.set(t, uri); return t;})();
-      return full.replace(uri, `{{IMG:${tok}}}`);
-    });
-  }
-  function expandText(markdown) {
-    return markdown.replace(tokenRe, (full, tok) => dataFor.get(tok) || full);
+
+      await sb.from('nodes').update(update).eq('id', node.id);
+      st.textContent = 'Saved';
+      if (mode === 'prev') await renderPreview();
+    }, 450);
   }
 
-  /* ---- marked: default rendering (data-URIs show inline) ---- */
+  /* =================== HL helpers =================== */
+  function stripHLBlocks(md) {
+    // keep inner content, remove {{HL:…}} wrappers
+    return md.replace(HL_BLOCK_RE, (m, key, up, content) => (content || '').trim());
+  }
+
+
+  async function copyText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.focus(); ta.select();
+        const ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        return ok;
+      } catch {return false;}
+    }
+  }
+
+
   async function expandHighlightRefs(markdown) {
-    // Expand editor-compact tokens before doing anything
-    const mdIn = compact ? expandText(markdown) : markdown;
+    // 1) Expand editor-level tokens (e.g., {{IMG:..}}) up front
+    const mdExpanded = expandText(markdown || '');
 
-    // Collect all <<HL:n>> keys present
+    // 2) Collect referenced keys in this doc
     const need = new Set();
-    mdIn.replace(HL_REF_RE, (_, k) => {
+    mdExpanded.replace(HL_REF_RE, (_, k) => {
       const n = parseInt(k, 10);
       if (Number.isFinite(n)) need.add(n);
       return '';
     });
-    if (need.size === 0 || !node || !node.id) return mdIn;
+    if (need.size === 0 || !node?.id) return mdExpanded;
 
-    // Fetch edges + highlights for those keys
+    // 3) Parse THIS node’s HL blocks from the expanded text (so images are concrete)
+    const localBlocks = extractHighlights(mdExpanded);
+    const localMap = new Map(localBlocks.map(b => [b.key, {content: b.content, dist: 0}]));
+
+    // 4) Fetch graph edges and highlight rows (descendants) for the remaining keys
     const [edgesRes, hsRes] = await Promise.all([
       sb.from('edges').select('source,target').eq('graph_id', graphId),
       sb.from('highlights')
@@ -248,22 +286,17 @@
     const edges = edgesRes.data || [];
     const hs = hsRes.data || [];
 
-    // Build downward adjacency (source -> [targets])
+    // 5) Downward adjacency + BFS from current node
     const down = new Map();
     for (const e of edges) {
       if (!down.has(e.source)) down.set(e.source, []);
       down.get(e.source).push(e.target);
     }
-
-    // BFS from current node to compute distances to descendants
-    const dist = new Map();
-    const q = [];
-    dist.set(node.id, 0);
-    q.push(node.id);
+    const dist = new Map([[node.id, 0]]);
+    const q = [node.id];
     while (q.length) {
       const u = q.shift();
-      const arr = down.get(u) || [];
-      for (const v of arr) {
+      for (const v of (down.get(u) || [])) {
         if (!dist.has(v)) {
           dist.set(v, dist.get(u) + 1);
           q.push(v);
@@ -271,8 +304,8 @@
       }
     }
 
-    // Choose the nearest valid highlight per key (respect max_up)
-    const best = new Map(); // key_int -> {content, dist}
+    // 6) Choose best descendant highlight per key (respect up=)
+    const best = new Map(); // key -> {content, dist}
     for (const h of hs) {
       const d = dist.get(h.node_id);
       if (d == null) continue;
@@ -283,144 +316,211 @@
       }
     }
 
-    // Substitute tokens
-    return mdIn.replace(HL_REF_RE, (m, k) => {
-      const kk = parseInt(k, 10);
-      const b = best.get(kk);
-      return b ? b.content : m;  // leave token if nothing valid
+    // 7) Substitute, preferring LOCAL content first
+    return mdExpanded.replace(HL_REF_RE, (m, k) => {
+      const key = parseInt(k, 10);
+      const local = localMap.get(key);
+      if (local) return local.content;          // same-node pin → use expanded content
+      const desc = best.get(key);
+      return desc ? desc.content : m;           // otherwise best descendant or leave token
     });
   }
 
-  // Build children map and descendant set
-  function childrenMap(edges) {
-    const map = new Map();
-    edges.forEach(e => {
-      if (!map.has(e.source)) map.set(e.source, []);
-      map.get(e.source).push(e.target);
-    });
-    return map;
+
+  /* =================== PREVIEW =================== */
+  async function renderPreview() {
+    const md0 = expandText(ed.value || '');     // expands images if compact
+    const md1 = await expandHighlightRefs(md0);
+    const md2 = stripHLBlocks(md1);
+    pv.innerHTML = DOMPurify.sanitize(marked.parse(md2 || ''), PURIFY_CFG);
   }
-  function descendantsOf(startId, edges) {
-    const ch = childrenMap(edges);
-    const seen = new Set(), q = [startId];
-    while (q.length) {
-      const u = q.shift();
-      for (const v of (ch.get(u) || [])) {
-        if (!seen.has(v)) {
-          seen.add(v);
-          q.push(v);
-        }
+
+
+  /* =================== PASTE SUBTREE =================== */
+  async function insertChildrenRec(parentId, arr) {
+    for (let i = 0; i < arr.length; i++) {
+      const ch = arr[i] || {};
+      const {data: nodeRow} = await sb.from('nodes')
+        .insert({
+          graph_id: graphId,
+          label: ch.label || '',
+          note_md: ch.note_md || '',
+          tag: ch.tag || 0,
+          sibling_order: i
+        })
+        .select().single();
+      await sb.from('edges').insert({graph_id: graphId, source: parentId, target: nodeRow.id});
+      if (Array.isArray(ch.children) && ch.children.length) {
+        await insertChildrenRec(nodeRow.id, ch.children);
       }
     }
-    return seen; // all descendants (not including startId)
-  }
-  async function parentOf(nodeId) {
-    const {data: edges = []} = await sb.from('edges').select('*').eq('graph_id', graphId);
-    const p = edges.find(e => e.target === nodeId)?.source || null;
-    return {parentId: p, edges};
   }
 
-  const btnReparent = document.getElementById('reparent');
+  function absUrl(path) {return new URL(path, location.href).toString();}
+  function nodeViewUrl() {return absUrl('note.html?id=' + node.id);}
+  function nodeEditUrl() {return absUrl('toolbar.html?id=' + node.id);}
+  function nodeIframe() {
+    const src = nodeViewUrl();
+    return `<iframe src="${src}" width="640" height="480" frameborder="0" allow="clipboard-read; clipboard-write"></iframe>`;
+  }
 
-  btnReparent.onclick = async () => {
-    // 1) Ask for a search term
-    const term = prompt('New parent name (search):');
-    if (term == null || !term.trim()) return;
-
-    // 2) Load current edges and block cycles
-    const {parentId: oldPid, edges} = await parentOf(node.id);
-    const desc = descendantsOf(node.id, edges); // cannot reparent into a descendant
-
-    // 3) Find candidate parents by name (case-insensitive)
-    const {data: candidates = []} = await sb
-      .from('nodes')
-      .select('id,label,deleted_at')
-      .eq('graph_id', graphId)
-      .ilike('label', `%${term.trim()}%`);
-
-    // Filter out self, deleted, and descendants
-    const options = candidates
-      .filter(r => !r.deleted_at)
-      .filter(r => r.id !== node.id && !desc.has(r.id));
-
-    if (options.length === 0) {
-      alert('No valid parent match found (or would create a cycle).');
-      return;
-    }
-
-    // 4) If multiple, let user pick by number
-    let chosen = options[0];
-    if (options.length > 1) {
-      const list = options
-        .slice(0, 10)
-        .map((r, i) => `${i + 1}. ${r.label}`)
-        .join('\n');
-      const pick = prompt(`Multiple matches:\n${list}\n\nPick # (1-${Math.min(10, options.length)}):`);
-      const idx = (parseInt(pick, 10) || 0) - 1;
-      if (idx < 0 || idx >= options.length) return;
-      chosen = options[idx];
-    }
-
-    // 5) No-op if already under this parent
-    if (oldPid && chosen.id === oldPid) {
-      msg('Already under that parent');
-      return;
-    }
-
-    // 6) Compute new sibling_order at the new parent (append to end)
-    const newSibs = edges.filter(e => e.source === chosen.id).map(e => e.target);
-    const newOrderIndex = newSibs.length;
-
-    // 7) Update sibling_order for the moving node
-    st.textContent = 'Saving…';
-    await sb.from('nodes').update({sibling_order: newOrderIndex}).eq('id', node.id);
-
-    // 8) Update the edge (move to new parent). If no existing edge, insert one.
-    const hasEdge = edges.some(e => e.target === node.id);
-    if (hasEdge) {
-      await sb.from('edges')
-        .update({source: chosen.id})
-        .eq('graph_id', graphId)
-        .eq('target', node.id);
+  const btnCopyLink = document.getElementById('copyLink');
+  btnCopyLink.onclick = async (ev) => {
+    if (!node) {alert('No node loaded'); return;}
+    let payload, label;
+    if (ev.shiftKey) {
+      payload = nodeIframe(); label = 'iframe';
+    } else if (ev.altKey || ev.ctrlKey || ev.metaKey) {
+      payload = nodeEditUrl(); label = 'editor link';
     } else {
-      await sb.from('edges')
-        .insert({graph_id: graphId, source: chosen.id, target: node.id});
+      payload = nodeViewUrl(); label = 'viewer link';
     }
-
-    // 9) Reindex old siblings to keep their sibling_order tidy
-    if (oldPid) {
-      const remain = edges
-        .filter(e => e.source === oldPid && e.target !== node.id)
-        .map(e => e.target);
-      if (remain.length) {
-        const {data: remNodes = []} = await sb
-          .from('nodes')
-          .select('id,sibling_order')
-          .in('id', remain)
-          .order('sibling_order', {ascending: true});
-        for (let i = 0; i < remNodes.length; i++) {
-          await sb.from('nodes').update({sibling_order: i}).eq('id', remNodes[i].id);
-        }
-      }
-    }
-
-    msg('Reparented');
-    // If preview is open and the note changed contextually, you can refresh it:
-    if (mode === 'prev') renderPreview().catch(() => { });
+    const ok = await copyText(payload);
+    msg(ok ? `Copied ${label}` : 'Copy failed');
   };
 
 
-  async function renderPreview() {
-    // If you have a PURIFY_CFG (to allow data:image/*), pass it here
-    const md0 = compact ? expandText(ed.value) : ed.value;
-    const md1 = await expandHighlightRefs(md0);
-    const md2 = stripHLBlocks(md1);
-    pv.innerHTML = DOMPurify.sanitize(marked.parse(md2 || ''), (typeof PURIFY_CFG !== 'undefined' ? PURIFY_CFG : undefined));
+  async function insertSubtreeAsChild(parentId, tree) {
+    // figure current children count to append at end
+    const {data: edges = []} = await sb.from('edges').select('source,target').eq('graph_id', graphId);
+    const order = edges.filter(e => e.source === parentId).length;
+
+    const {data: rootRow} = await sb.from('nodes')
+      .insert({
+        graph_id: graphId,
+        label: tree.label || '',
+        note_md: tree.note_md || '',
+        tag: tree.tag || 0,
+        sibling_order: order
+      })
+      .select().single();
+
+    await sb.from('edges').insert({graph_id: graphId, source: parentId, target: rootRow.id});
+
+    if (Array.isArray(tree.children) && tree.children.length) {
+      await insertChildrenRec(rootRow.id, tree.children);
+    }
+    return rootRow.id;
   }
 
+  async function readClipboardText() {
+    try {return await navigator.clipboard.readText();}
+    catch {
+      // Fallback prompt (user can paste into the prompt)
+      const t = prompt('Paste subtree JSON here:');
+      return t || '';
+    }
+  }
 
-  // Get next available highlight key (graph-wide)
-  // Avoids collisions by taking max(key_int)+1 across this graph.
+  btnPasteTree.onclick = async () => {
+    if (!node) {alert('No node loaded'); return;}
+    msg('Reading clipboard…');
+    const text = await readClipboardText();
+    if (!text) {msg('Ready'); return;}
+
+    let data;
+    try {data = JSON.parse(text);}
+    catch {alert('Clipboard is not valid JSON'); msg('Ready'); return;}
+
+    const tree = (data && data.tree) ? data.tree : data;
+    if (!tree || typeof tree !== 'object' || !('label' in tree)) {
+      alert('Clipboard does not contain a Radial subtree'); msg('Ready'); return;
+    }
+
+    try {
+      msg('Saving…');
+      await insertSubtreeAsChild(node.id, tree);
+      msg('Subtree pasted');
+    } catch (e) {
+      console.error(e);
+      alert('Paste failed: ' + (e?.message || e));
+      msg('Ready');
+    }
+  };
+
+  /* =================== NAME / DOC EVENTS =================== */
+  nameEl.addEventListener('input', () => queueSave('name'));
+  ed.addEventListener('input', () => queueSave('doc'));
+
+  /* Preview/Edit toggle */
+  function setMode(m) {
+    mode = m;
+    if (mode === 'prev') {ed.style.display = 'none'; pv.style.display = 'block'; btnMode.textContent = '✏️'; btnMode.title = 'Edit';}
+    else {ed.style.display = 'block'; pv.style.display = 'none'; btnMode.textContent = '👁️'; btnMode.title = 'Preview';}
+  }
+  btnMode.onclick = async () => {
+    if (mode === 'prev') {setMode('edit');}
+    else {setMode('prev'); await renderPreview();}
+  };
+
+  /* =================== IMAGE PASTE (optional, data URL) =================== */
+  window.addEventListener('paste', (e) => {
+    const items = e.clipboardData?.items || [];
+    for (const it of items) {
+      if (it.type && it.type.startsWith('image/')) {
+        e.preventDefault();
+        const file = it.getAsFile(); if (!file) return;
+        const r = new FileReader();
+        r.onload = () => {
+          const dataUrl = String(r.result || "");
+          const s = ed.selectionStart, t = ed.selectionEnd, v = ed.value;
+          let snippet = `\n![pasted](${dataUrl})\n`;
+          if (compact) {
+            // Put it in the map and token immediately
+            const id = `img${Object.keys(imgMap).length + 1}`;
+            imgMap[id] = {alt: 'pasted', url: dataUrl};
+            snippet = `\n{{IMG:${id}}}\n`;
+          }
+          ed.value = v.slice(0, s) + snippet + v.slice(t);
+          ed.selectionStart = ed.selectionEnd = s + snippet.length;
+          ed.focus();
+          queueSave('doc');
+          if (mode === 'prev') renderPreview();
+        };
+        r.readAsDataURL(file);
+        return;
+      }
+    }
+  });
+
+  /* ---------- Collapse/expand data-URI images in editor ---------- */
+  let compact = false;        // editor shows collapsed image tokens when true
+  let imgMap = {};            // id -> {alt, url}
+
+  /* Find all data-URI images and build a map; return collapsed text */
+  function collapseImages(text) {
+    imgMap = {};
+    let idx = 1;
+    const re = /!\[([^\]]*)\]\((data:image\/[a-zA-Z0-9.+-]+;base64,[^)]+)\)/g;
+    return text.replace(re, (_m, alt, url) => {
+      const id = `img${idx++}`;
+      imgMap[id] = {alt: alt || 'pasted', url};
+      return `{{IMG:${id}}}`;
+    });
+  }
+
+  /* Expand {{IMG:id}} tokens back to full data-URI images using the current imgMap */
+  function expandImages(text) {
+    return text.replace(/\{\{IMG:([a-zA-Z0-9_-]+)\}\}/g, (_m, id) => {
+      const rec = imgMap[id];
+      if (!rec) return _m; // token unknown -> leave as-is
+      return `![${rec.alt}](${rec.url})`;
+    });
+  }
+
+  /* Expand if compact; otherwise pass-through */
+  function expandText(text) {return compact ? expandImages(text) : text;}
+
+  /* ---------- Insert at caret helper ---------- */
+  function insertAtSelection(textarea, snippet) {
+    const s = textarea.selectionStart, e = textarea.selectionEnd, v = textarea.value;
+    textarea.value = v.slice(0, s) + snippet + v.slice(e);
+    const p = s + snippet.length;
+    textarea.selectionStart = textarea.selectionEnd = p;
+    textarea.focus();
+  }
+
+  /* ---------- Highlights: auto key ---------- */
   async function nextHLKey() {
     const {data: rows = []} = await sb
       .from('highlights')
@@ -432,332 +532,150 @@
     return maxK + 1;
   }
 
-  // Insert text at the current selection/caret
-  function insertAtSelection(textarea, snippet) {
-    const s = textarea.selectionStart, e = textarea.selectionEnd, v = textarea.value;
-    textarea.value = v.slice(0, s) + snippet + v.slice(e);
-    const p = s + snippet.length;
-    textarea.selectionStart = textarea.selectionEnd = p;
-    textarea.focus();
-  }
-
-
-  // Add to HTML bar: <button id="insHL" title="Insert HL token">🔁</button>
-  // 📌 Insert new HL block with auto-assigned number (default up=99)
-  const btnHL = document.getElementById('hlNew');
-  btnHL.onclick = async () => {
-    try {
-      const k = await nextHLKey();
-      const s = ed.selectionStart, e = ed.selectionEnd;
-      const sel = ed.value.slice(s, e);
-      const body = sel && sel.trim().length ? sel : 'SOME MARKDOWN WOO 🐸🐸';
-      const block = `\n{{HL:${k}|up=99}}\n${body}\n{{/HL}}\n`;
-
-      insertAtSelection(ed, block);
-      msg(`HL #${k} inserted`);
-
-      // Save & re-render
-      queueSave('doc');                     // your save collapses/expands as needed
-      if (mode === 'prev') await renderPreview();
-    } catch (err) {
-      console.error(err);
-      msg('Could not create highlight');
-    }
-  };
-
-
-
-
-  /* ---- helpers ---- */
-  /* ======= Highlight plumbing ======= */
-  /* Syntax:
-     {{HL:123|up=2}}
-     ... any markdown ...
-     {{/HL}}
-     - 123 is the highlight number (required, integer)
-     - up=2 is optional, defaults to 1
-  */
-  const HL_BLOCK_RE = /\{\{HL:(\d+)(?:\|up=(\d+))?\}\}([\s\S]*?)\{\{\/HL\}\}/g;
-  const HL_REF_RE = /<<HL:(\d+)>>/g;
-
-
-  // Strip HL blocks (leave nothing in preview)
-  // Strip HL markers, but keep inner markdown content
-  function stripHLBlocks(md) {
-    return md.replace(HL_BLOCK_RE, (m, key, up, content) => content.trim());
-  }
+  /* Minimal HL sync so <<HL:n>> resolves in preview */
+  // keep your HL_BLOCK_RE / HL_REF_RE up top
 
   function extractHighlights(md) {
-    const out = [];
+    const blocks = [];
     let m;
     while ((m = HL_BLOCK_RE.exec(md))) {
-      const key = parseInt(m[1], 10);
-      const up = m[2] ? parseInt(m[2], 10) : 1;
-      const content = (m[3] || '').trim();
-      if (!Number.isFinite(key) || key < 0) continue;
-      out.push({key, up, content});
+      blocks.push({
+        key: parseInt(m[1], 10),
+        up: m[2] ? parseInt(m[2], 10) : 1,
+        content: (m[3] || '').trim()
+      });
     }
-    return out;
+    return blocks;
   }
-
-
-
-
-
-  function msg(t) {st.textContent = t; if (t !== 'Saving…') setTimeout(() => {if (st.textContent === t) st.textContent = 'Ready';}, 1000);}
-  function setMode(m) {
-    mode = m;
-    if (m === 'edit') {ed.style.display = 'block'; pv.style.display = 'none'; btnMode.textContent = '👁️'; btnMode.title = 'Preview';}
-    else {renderPreview(); ed.style.display = 'none'; pv.style.display = 'block'; btnMode.textContent = '✏️'; btnMode.title = 'Edit';}
-  }
-  function kidsOf(id, edges) {return edges.filter(e => e.source === id).map(e => e.target);}
-  function queueSave(kind) {
-    st.textContent = 'Saving…';
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(async () => {
-      const update = {};
-      if (kind === 'doc') {
-        update.note_md = compact ? expandText(ed.value) : ed.value; // never save compacted tokens
-      }
-      await sb.from('nodes').update(update).eq('id', node.id);
-      await syncHighlights(ed.value);  // <-- add this line
-
-      if (kind === 'name') {update.label = nameEl.value;}
-      await sb.from('nodes').update(update).eq('id', node.id);
-      msg('Saved');
-      if (mode === 'prev') renderPreview();
-    }, 200);
-  }
-
-
-
-  function paintDot() {
-    const c = TAGS[(node?.tag || 0) % TAGS.length];
-    const dot = document.getElementById('tagdot');
-    dot.style.background = c ? c : "transparent";
-    dot.style.borderColor = c ? c : "#e5e7eb";
-  }
-
-
-  /* ---- load node ---- */
-  async function load() {
-    const {data: n, error} = await sb.from('nodes').select('*').eq('id', nodeId).single();
-    if (error) {st.textContent = 'Load error'; return;}
-    node = n; graphId = n.graph_id;
-    nameEl.value = n.label || '';
-    ed.value = n.note_md || '';
-    paintDot();                      // NEW
-    tokenFor.clear(); dataFor.clear(); imgSeq = 1;
-    indexImages(ed.value);
-    msg('Ready');
-    if (mode === 'prev') renderPreview().catch(() => { });
-  }
-
-  /* ---- editor + name autosave ---- */
-  ed.addEventListener('input', () => {indexImages(ed.value); queueSave('doc');});
-  nameEl.addEventListener('input', () => queueSave('name'));
-
-  /* ---- paste: convert clipboard images to data-URI ---- */
-  window.addEventListener('paste', (e) => {
-    const items = e.clipboardData?.items || [];
-    for (const it of items) {
-      if (it.type && it.type.startsWith('image/')) {
-        e.preventDefault();
-        const file = it.getAsFile(); if (!file) return;
-        const r = new FileReader();
-        r.onload = () => {
-          const dataUrl = String(r.result || "");
-          // insert full data-URI markdown at caret
-          const start = ed.selectionStart, end = ed.selectionEnd, v = ed.value;
-          const snippet = `\n![pasted](${dataUrl})\n`;
-          ed.value = v.slice(0, start) + snippet + v.slice(end);
-          // index & optionally compact that insertion
-          indexImages(ed.value);
-          if (compact) {ed.value = collapseText(ed.value);}
-          queueSave('doc');
-          if (mode === 'prev') renderPreview();
-        };
-        r.readAsDataURL(file);
-        return;
-      }
-    }
-    // allow normal text paste otherwise
-  });
 
   async function syncHighlights(markdown) {
-    // Find current blocks in editor (expand any compact IMG tokens first)
-    const expandedMd = compact ? expandText(markdown) : markdown;
-    const blocks = extractHighlights(expandedMd);
+    if (!node) return;
+    const blocks = extractHighlights(markdown);
 
-    // Existing highlights for this node
-    const {data: existing = []} = await sb
+    // existing rows for THIS node
+    const {data: exist = []} = await sb
       .from('highlights')
       .select('id,key_int,max_up,content')
       .eq('graph_id', graphId)
       .eq('node_id', node.id);
 
-    const extByKey = new Map(existing.map(h => [h.key_int, h]));
+    const existMap = new Map(exist.map(h => [h.key_int, h]));
+    const seen = new Set();
 
-    // Upsert new/changed blocks; collect "first-time" keys
-    const firstTimeKeys = [];
     for (const b of blocks) {
-      const prev = extByKey.get(b.key);
+      seen.add(b.key);
+      const prev = existMap.get(b.key);
       if (!prev) {
-        firstTimeKeys.push(b.key);
         await sb.from('highlights').insert({
           graph_id: graphId, node_id: node.id,
           key_int: b.key, max_up: b.up, content: b.content
         });
-      } else {
-        if (prev.max_up !== b.up || prev.content !== b.content) {
-          await sb.from('highlights').update({
-            max_up: b.up, content: b.content, updated_at: new Date().toISOString()
-          }).eq('id', prev.id);
-        }
-        extByKey.delete(b.key);
+      } else if (prev.max_up !== b.up || prev.content !== b.content) {
+        await sb.from('highlights')
+          .update({max_up: b.up, content: b.content})
+          .eq('id', prev.id);
       }
     }
 
-    // Delete removed blocks
-    for (const [k, h] of extByKey) {
-      await sb.from('highlights').delete().eq('id', h.id);
+    // delete highlights removed from this node's markdown
+    for (const [key, row] of existMap.entries()) {
+      if (!seen.has(key)) await sb.from('highlights').delete().eq('id', row.id);
     }
+  }
 
-    // For first-time keys, offer to auto-insert tokens into ancestors up to max_up
-    if (firstTimeKeys.length) {
-      // Load edges once
-      const {data: edges = []} = await sb.from('edges').select('source,target').eq('graph_id', graphId);
-      const parentMap = new Map();  // child -> parent
-      edges.forEach(e => parentMap.set(e.target, e.source || null));
+  async function ancestorsWithin(nodeId, maxDepth) {
+    const {data: edges = []} = await sb
+      .from('edges').select('source,target').eq('graph_id', graphId);
 
-      // Walk up ancestors with distance
-      function ancestorsUpTo(startId, up) {
-        const res = [];
-        let cur = startId, d = 0;
-        while (d < up) {
-          const p = parentMap.get(cur);
-          if (!p) break;
-          d += 1;
-          res.push({id: p, dist: d});
-          cur = p;
-        }
-        return res;
-      }
+    const parentOf = new Map(edges.map(e => [e.target, e.source]));
+    const out = [];
+    let cur = nodeId, d = 0;
+    while (d < maxDepth) {
+      const p = parentOf.get(cur);
+      if (!p) break;
+      out.push(p);
+      cur = p;
+      d++;
+    }
+    return out; // [immediateParent, grandParent, ...]
+  }
 
-      // For each first-time key: find its block to know max_up
-      for (const k of firstTimeKeys) {
-        const blk = blocks.find(b => b.key === k);
-        if (!blk) continue;
-        const ancestors = ancestorsUpTo(node.id, blk.up);
+  function ensureNewlineEnd(s) {return s && !s.endsWith('\n') ? s + '\n' : (s || '');}
 
-        // Ask per parent whether to insert a token if not already present
-        for (const {id: pid} of ancestors) {
-          const {data: pnode, error: pnerr} = await sb.from('nodes').select('*').eq('id', pid).single();
-          if (pnerr || !pnode) continue;
-          const hasRef = (pnode.note_md || '').includes(`<<HL:${k}>>`);
-          if (!hasRef) {
-            const ok = confirm(`Add highlight <<HL:${k}>> to parent "${pnode.label || '(untitled)'}"?`);
-            if (ok) {
-              const updated = (pnode.note_md || '') + `\n\n<<HL:${k}>>\n`;
-              await sb.from('nodes').update({note_md: updated}).eq('id', pid);
-            }
-          }
-        }
-      }
+  async function ensureHLReceiversForPin(key, up) {
+    const ancestors = await ancestorsWithin(node.id, up);
+    const tokenRe = new RegExp(`<<HL:${key}>>`);
+
+    for (const aid of ancestors) {
+      const {data: parent} = await sb.from('nodes')
+        .select('id,note_md').eq('id', aid).single();
+
+      if (!parent) continue;
+      const md = parent.note_md || '';
+      if (tokenRe.test(md)) continue; // already has receiver
+
+      const updated = ensureNewlineEnd(md) + `<<HL:${key}>>\n`;
+      await sb.from('nodes').update({note_md: updated}).eq('id', aid);
     }
   }
 
 
-  /* ---- compact toggle (editor-only) ---- */
-  btnCompact.onclick = () => {
-    compact = !compact;
-    btnCompact.classList.toggle('active', compact);
+
+  const btnHL = document.getElementById('hlNew');
+  const btnImgTog = document.getElementById('imgToggle');
+
+  /* 📌 Insert a new HL block with auto-assigned number (up=99) */
+  btnHL.onclick = async () => {
+    if (!node) return;
+    const k = await nextHLKey();
+    const s = ed.selectionStart, e = ed.selectionEnd;
+    const sel = ed.value.slice(s, e);
+    const body = sel && sel.trim().length ? sel : 'SOME MARKDOWN WOO 🐸🐸';
+    const upVal = 99; // default reach
+
+    const block = `\n{{HL:${k}|up=${upVal}}}\n${body}\n{{/HL}}\n`;
+    insertAtSelection(ed, block);
+
+    // Save immediately and sync HL rows for *this* node
+    const expanded = expandText(ed.value);         // expand {{IMG:…}} if compact
+    await sb.from('nodes').update({note_md: expanded}).eq('id', node.id);
+    await syncHighlights(expanded);
+
+    // Now auto-create receivers in ancestors
+    await ensureHLReceiversForPin(k, upVal);
+
+    msg(`HL #${k} pinned & linked`);
+    if (mode === 'prev') await renderPreview();
+  };
+
+
+  /* 🗜️ Collapse/expand images in the editor */
+  btnImgTog.onclick = async () => {
     if (compact) {
-      indexImages(ed.value);
-      ed.value = collapseText(ed.value);
+      // expand back
+      ed.value = expandImages(ed.value);
+      compact = false;
+      btnImgTog.textContent = '🗜️';
+      btnImgTog.title = 'Collapse images in editor';
     } else {
-      ed.value = expandText(ed.value);
+      // collapse current data-URI images to tokens
+      ed.value = collapseImages(ed.value);
+      compact = true;
+      btnImgTog.textContent = '🧩';
+      btnImgTog.title = 'Expand images in editor';
     }
-    // do not save just for toggling visual mode
-    if (mode === 'prev') renderPreview();
+    queueSave('doc');                 // save expanded form (see below)
+    if (mode === 'prev') await renderPreview();
   };
 
-  /* ---- reorder (visual LEFT = later; RIGHT = earlier) ---- */
-  async function siblings() {
-    const {data: edges = []} = await sb.from('edges').select('*').eq('graph_id', graphId);
-    const p = edges.find(x => x.target === node.id)?.source || null;
-    const ks = p ? kidsOf(p, edges) : [node.id];
-    const {data: nodes = []} = await sb.from('nodes').select('id,sibling_order').in('id', ks).order('sibling_order', {ascending: true});
-    return {parent: p, order: nodes.map(r => r.id)};
-  }
-  btnLeft.onclick = async () => {
-    const {order} = await siblings();
-    const i = order.indexOf(node.id);
-    if (i < 0 || i === order.length - 1) return;
-    [order[i], order[i + 1]] = [order[i + 1], order[i]];
-    for (let j = 0; j < order.length; j++) await sb.from('nodes').update({sibling_order: j}).eq('id', order[j]);
-    msg('Moved left');
-  };
-  btnRight.onclick = async () => {
-    const {order} = await siblings();
-    const i = order.indexOf(node.id);
-    if (i <= 0) return;
-    [order[i], order[i - 1]] = [order[i - 1], order[i]];
-    for (let j = 0; j < order.length; j++) await sb.from('nodes').update({sibling_order: j}).eq('id', order[j]);
-    msg('Moved right');
-  };
-
-  /* ---- add child ---- */
-  btnAdd.onclick = async () => {
-    const title = prompt('Child title?'); if (title == null) return;
-    const {data: edges = []} = await sb.from('edges').select('*').eq('graph_id', graphId);
-    const order = kidsOf(node.id, edges);
-    const {data: newN} = await sb.from('nodes')
-      .insert({graph_id: graphId, label: title, sibling_order: order.length, note_md: ''})
-      .select().single();
-    await sb.from('edges').insert({graph_id: graphId, source: node.id, target: newN.id});
-    msg('Child added');
-  };
-
-  /* ---- delete subtree (soft) ---- */
-  btnDel.onclick = async () => {
-    if (!confirm('Delete this node and all descendants?')) return;
-    const {data: edges = []} = await sb.from('edges').select('*').eq('graph_id', graphId);
-    const toDel = new Set([node.id]); const st = [node.id];
-    while (st.length) {const u = st.pop(); edges.filter(x => x.source === u).forEach(x => {if (!toDel.has(x.target)) {toDel.add(x.target); st.push(x.target);} });}
-    await sb.from('nodes').update({deleted_at: new Date().toISOString()}).in('id', [...toDel]);
-    msg('Deleted');
-  };
-  const bar = document.getElementById('bar');
-  bar.addEventListener('contextmenu', async (e) => {
-    e.preventDefault();
-    const next = ((node?.tag || 0) + 1) % TAGS.length;
-    node.tag = next;
-    paintDot();
-    st.textContent = 'Saving…';
-    await sb.from('nodes').update({tag: next}).eq('id', node.id);
-    msg('Saved');
-  });
 
 
-  /* ---- preview toggle; copy embed; Esc closes in parent ---- */
-  btnMode.onclick = async () => {
-    if (mode === 'edit') {
-      mode = 'prev'; ed.style.display = 'none'; pv.style.display = 'block';
-      btnMode.textContent = '✏️'; btnMode.title = 'Edit';
-      await renderPreview();
-    } else {
-      mode = 'edit'; ed.style.display = 'block'; pv.style.display = 'none';
-      btnMode.textContent = '👁️'; btnMode.title = 'Preview';
-    }
-  };
 
-  btnCopy.onclick = async () => {
-    const url = new URL(location.href); url.search = ''; url.searchParams.set('id', nodeId);
-    await navigator.clipboard.writeText(url.toString()); msg('Link copied');
-  };
-  window.addEventListener('keydown', (e) => {if (e.key === 'Escape') {parent.postMessage('close-toolbar', '*');} });
 
-  /* ---- boot ---- */
-  setMode('prev'); load();
+
+  /* =================== BOOT =================== */
+  (async function () {
+    setMode('prev');         // default to Preview on open
+    await load();            // fetch node & populate
+  })();
 </script>
